@@ -1,58 +1,60 @@
-import os
-import uuid
 import datetime
+import os
 import sqlite3
-from typing import Any, Callable, Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Optional
 
 from app.logger import logger
 from app.model_registry import get_notion_model
 
 
-def summarize_turn(old_summary: Optional[str], user_msg: str, assistant_msg: str) -> str:
-    """Summarize one historical user/assistant turn and merge it into existing summary text."""
-    # TODO: Replace this stub with a real LLM-powered summarization call.
-    prior = (old_summary or "").strip()
-    latest = f"User asked: {user_msg}\nAssistant replied: {assistant_msg}"
-    return f"{prior}\n\n{latest}" if prior else latest
-
-
 class ConversationManager:
-    """SQLite-backed conversation history manager with rolling context compression."""
+    """SQLite-backed conversation history manager with layered memory."""
 
-    WINDOW_SIZE = 6
+    WINDOW_SIZE = 10
+    SUMMARY_INJECT_LIMIT = 15
+    RECALL_LIMIT = 5
 
     def __init__(self):
-        """Initialize database paths, schema, and summarization dependency."""
         self.db_path = os.getenv("DB_PATH", "./data/conversations.db")
         os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
-        self._summarize_turn_fn: Callable[[Optional[str], str, str], str] = summarize_turn
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
-        """Create a SQLite connection with busy-timeout and foreign key settings."""
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column_sql: str) -> None:
+        """Ensure column exists while prioritizing SQLite IF NOT EXISTS syntax."""
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column_sql}")
+            return
+        except sqlite3.OperationalError:
+            # Fallback for old SQLite builds without IF NOT EXISTS support.
+            column_name = column_sql.split()[0]
+            columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if column_name not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_sql}")
+
     def _init_db(self) -> None:
-        """Create tables and apply lightweight migration for summary column."""
         with self._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute("PRAGMA journal_mode = WAL")
             cursor.execute(
-                '''
+                """
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY,
                     title TEXT,
                     created_at INTEGER,
                     summary TEXT
                 )
-                '''
+                """
             )
             cursor.execute(
-                '''
+                """
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     conversation_id TEXT,
@@ -61,21 +63,66 @@ class ConversationManager:
                     created_at INTEGER,
                     FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 )
-                '''
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS compressed_summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    round_index INTEGER NOT NULL,
+                    user_content TEXT NOT NULL,
+                    assistant_content TEXT NOT NULL,
+                    summary TEXT,
+                    compress_status TEXT DEFAULT 'pending',
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS full_archive (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    round_index INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_full_archive_unique
+                ON full_archive(conversation_id, round_index, role, content)
+                """
             )
 
-            # Migration for existing DB files without the summary column.
-            columns = {
-                row["name"]
-                for row in conn.execute("PRAGMA table_info(conversations)").fetchall()
-            }
-            if "summary" not in columns:
-                conn.execute("ALTER TABLE conversations ADD COLUMN summary TEXT")
+            # Keep legacy summary for compatibility but do not write to it anymore.
+            self._ensure_column(conn, "conversations", "summary TEXT")
+            self._ensure_column(conn, "conversations", "next_round_index INTEGER DEFAULT 0")
+            self._ensure_column(conn, "conversations", "compress_failed_at INTEGER")
 
+            # Backfill next_round_index for pre-migration conversations that already had history.
+            conn.execute(
+                """
+                UPDATE conversations
+                SET next_round_index = (
+                    SELECT CAST(COUNT(*) / 2 AS INTEGER)
+                    FROM messages
+                    WHERE messages.conversation_id = conversations.id
+                )
+                WHERE COALESCE(next_round_index, 0) = 0
+                  AND EXISTS (
+                    SELECT 1 FROM messages WHERE messages.conversation_id = conversations.id
+                  )
+                """
+            )
             conn.commit()
 
     def _count_messages(self, conn: sqlite3.Connection, conversation_id: str) -> int:
-        """Return message count for a conversation."""
         row = conn.execute(
             "SELECT COUNT(1) AS cnt FROM messages WHERE conversation_id = ?",
             (conversation_id,),
@@ -88,7 +135,6 @@ class ConversationManager:
         conversation_id: str,
         limit: int,
     ) -> List[Dict[str, str]]:
-        """Fetch the newest messages and return them in chronological order."""
         rows = conn.execute(
             """
             SELECT role, content
@@ -104,7 +150,6 @@ class ConversationManager:
         return messages
 
     def _normalize_window_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        """Enforce strict user/assistant alternation starting from user."""
         normalized: List[Dict[str, str]] = []
         expected_role = "user"
         for msg in messages:
@@ -121,129 +166,25 @@ class ConversationManager:
             normalized.pop()
         return normalized
 
-    def _compress_oldest_turn(
+    def _archive_message(
         self,
+        conn: sqlite3.Connection,
         conversation_id: str,
-        conn: Optional[sqlite3.Connection] = None,
-    ) -> bool:
-        """
-        Compress the oldest user+assistant turn into the running summary.
-
-        Returns False when there is not enough data to compress or role pairing is invalid.
-        """
-        owns_conn = conn is None
-        connection = conn or self._get_conn()
-        try:
-            conv_row = connection.execute(
-                "SELECT summary FROM conversations WHERE id = ?",
-                (conversation_id,),
-            ).fetchone()
-            if not conv_row:
-                raise ValueError(f"Conversation ID '{conversation_id}' does not exist.")
-
-            rows = connection.execute(
-                """
-                SELECT id, role, content
-                FROM messages
-                WHERE conversation_id = ?
-                ORDER BY created_at ASC, id ASC
-                LIMIT 2
-                """,
-                (conversation_id,),
-            ).fetchall()
-            if len(rows) < 2:
-                return False
-
-            first, second = rows[0], rows[1]
-            if first["role"] != "user" or second["role"] != "assistant":
-                logger.warning(
-                    "Skip compression due to non user/assistant oldest pair",
-                    extra={
-                        "request_info": {
-                            "event": "conversation_compress_skipped",
-                            "conversation_id": conversation_id,
-                            "roles": [first["role"], second["role"]],
-                        }
-                    },
-                )
-                return False
-
-            merged_summary = self._summarize_turn_fn(
-                conv_row["summary"],
-                first["content"],
-                second["content"],
-            )
-            connection.execute(
-                "UPDATE conversations SET summary = ? WHERE id = ?",
-                (merged_summary, conversation_id),
-            )
-            connection.execute(
-                "DELETE FROM messages WHERE id IN (?, ?)",
-                (first["id"], second["id"]),
-            )
-
-            if owns_conn:
-                connection.commit()
-            return True
-        finally:
-            if owns_conn:
-                connection.close()
-
-    def new_conversation(self) -> str:
-        """Create a new conversation and return a UUID conversation_id."""
-        conv_id = str(uuid.uuid4())
-        created_at = int(datetime.datetime.now().timestamp())
-        with self._get_conn() as conn:
-            conn.execute(
-                "INSERT INTO conversations (id, title, created_at) VALUES (?, ?, ?)",
-                (conv_id, "New Chat", created_at),
-            )
-            conn.commit()
-        logger.info(
-            "Conversation created",
-            extra={"request_info": {"event": "conversation_created", "conversation_id": conv_id}},
-        )
-        return conv_id
-
-    def conversation_exists(self, conversation_id: str) -> bool:
-        """Check whether a conversation exists."""
-        if not conversation_id:
-            return False
-
-        with self._get_conn() as conn:
-            row = conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
-            return row is not None
-
-    def add_message(self, conversation_id: str, role: str, content: str) -> None:
-        """Append one message and auto-compress old turns when window size is exceeded."""
-        if role not in {"user", "assistant", "system"}:
-            raise ValueError(f"Invalid role: {role}")
-
-        with self._get_conn() as conn:
-            row = conn.execute("SELECT id FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
-            if not row:
-                raise ValueError(f"Conversation ID '{conversation_id}' does not exist.")
-
-            created_at = int(datetime.datetime.now().timestamp())
-            conn.execute(
-                "INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (conversation_id, role, content, created_at),
-            )
-
-            while self._count_messages(conn, conversation_id) > self.WINDOW_SIZE:
-                compressed = self._compress_oldest_turn(conversation_id, conn=conn)
-                if not compressed:
-                    break
-
-            conn.commit()
-
-    def _build_dialog_block(
-        self,
         role: str,
         content: str,
-        notion_client: Any,
-    ) -> Dict[str, Any]:
-        """Build a transcript dialog block for user/assistant content."""
+        round_index: int,
+        created_at: int,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO full_archive (
+                conversation_id, role, content, round_index, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (conversation_id, role, content, round_index, created_at),
+        )
+
+    def _build_dialog_block(self, role: str, content: str, notion_client: Any) -> Dict[str, Any]:
         block: Dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "type": role,
@@ -253,31 +194,8 @@ class ConversationManager:
             block["userId"] = notion_client.user_id
         return block
 
-    def get_transcript(self, notion_client, conversation_id: str, new_prompt: str, model_name: str) -> list:
-        """
-        Build Notion transcript with strict ordering:
-        config -> context -> optional summary blocks -> sliding window messages -> new user prompt.
-        """
-        summary_text = ""
-        messages: List[Dict[str, str]] = []
-
-        with self._get_conn() as conn:
-            row = conn.execute("SELECT id FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
-            if not row:
-                raise ValueError(f"Conversation ID '{conversation_id}' does not exist.")
-
-            summary_row = conn.execute(
-                "SELECT summary FROM conversations WHERE id = ?",
-                (conversation_id,),
-            ).fetchone()
-            summary_text = (summary_row["summary"] or "").strip() if summary_row else ""
-            messages = self._fetch_recent_messages(conn, conversation_id, self.WINDOW_SIZE)
-
-        messages = self._normalize_window_messages(messages)
-
-        transcript: List[Dict[str, Any]] = []
-
-        config_block = {
+    def _build_config_block(self, model_name: str) -> Dict[str, Any]:
+        return {
             "id": str(uuid.uuid4()),
             "type": "config",
             "value": {
@@ -337,9 +255,9 @@ class ConversationManager:
                 "enableMailExplicitToolCalls": True,
             },
         }
-        transcript.append(config_block)
 
-        context_block = {
+    def _build_context_block(self, notion_client: Any) -> Dict[str, Any]:
+        return {
             "id": str(uuid.uuid4()),
             "type": "context",
             "value": {
@@ -355,38 +273,588 @@ class ConversationManager:
                 "agentName": notion_client.user_name,
             },
         }
-        transcript.append(context_block)
 
-        if summary_text:
+    def _fetch_recent_done_summaries(self, conn: sqlite3.Connection, conversation_id: str) -> List[str]:
+        rows = conn.execute(
+            """
+            SELECT summary
+            FROM compressed_summaries
+            WHERE conversation_id = ?
+              AND compress_status = 'done'
+              AND COALESCE(summary, '') <> ''
+            ORDER BY round_index DESC
+            LIMIT ?
+            """,
+            (conversation_id, self.SUMMARY_INJECT_LIMIT),
+        ).fetchall()
+        logger.info(
+            "Loaded done compressed summaries for transcript injection",
+            extra={
+                "request_info": {
+                    "event": "memory_summary_query_done",
+                    "conversation_id": conversation_id,
+                    "compress_status": "done",
+                    "row_count": len(rows),
+                }
+            },
+        )
+
+        summaries: List[str] = []
+        for row in rows:
+            summary = str(row["summary"] or "").strip()
+            if summary:
+                summaries.append(summary)
+
+        summaries.reverse()
+        logger.info(
+            "Prepared summary injection payload",
+            extra={
+                "request_info": {
+                    "event": "memory_summary_payload_ready",
+                    "conversation_id": conversation_id,
+                    "summary_count": len(summaries),
+                }
+            },
+        )
+        return summaries
+
+    def _has_failed_compression(self, conn: sqlite3.Connection, conversation_id: str) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM compressed_summaries
+            WHERE conversation_id = ?
+              AND compress_status = 'failed'
+            LIMIT 1
+            """,
+            (conversation_id,),
+        ).fetchone()
+        return row is not None
+
+    def _search_recall_round_indices(
+        self,
+        conn: sqlite3.Connection,
+        conversation_id: str,
+        query: str,
+    ) -> List[int]:
+        keyword = (query or "").strip()
+        if not keyword:
+            return []
+
+        like_pattern = f"%{keyword}%"
+        rows = conn.execute(
+            """
+            SELECT round_index
+            FROM compressed_summaries
+            WHERE conversation_id = ?
+              AND (
+                  user_content LIKE ?
+                  OR assistant_content LIKE ?
+                  OR COALESCE(summary, '') LIKE ?
+              )
+            ORDER BY
+              CASE
+                WHEN COALESCE(summary, '') LIKE ? THEN 0
+                WHEN user_content LIKE ? THEN 1
+                ELSE 2
+              END,
+              round_index DESC
+            LIMIT ?
+            """,
+            (
+                conversation_id,
+                like_pattern,
+                like_pattern,
+                like_pattern,
+                like_pattern,
+                like_pattern,
+                self.RECALL_LIMIT,
+            ),
+        ).fetchall()
+
+        return sorted({int(row["round_index"]) for row in rows})
+
+    def _format_recalled_archive(
+        self,
+        conn: sqlite3.Connection,
+        conversation_id: str,
+        round_indices: List[int],
+    ) -> str:
+        if not round_indices:
+            return ""
+
+        placeholders = ",".join(["?"] * len(round_indices))
+        rows = conn.execute(
+            f"""
+            SELECT round_index, role, content
+            FROM full_archive
+            WHERE conversation_id = ?
+              AND round_index IN ({placeholders})
+            ORDER BY round_index ASC, id ASC
+            """,
+            [conversation_id, *round_indices],
+        ).fetchall()
+
+        if not rows:
+            return ""
+
+        grouped: Dict[int, List[sqlite3.Row]] = {}
+        for row in rows:
+            grouped.setdefault(int(row["round_index"]), []).append(row)
+
+        role_map = {"user": "用户", "assistant": "AI", "system": "系统"}
+        lines: List[str] = []
+        for round_index in sorted(grouped.keys()):
+            lines.append(f"[第 {round_index + 1} 轮]")
+            for row in grouped[round_index]:
+                label = role_map.get(str(row["role"]), str(row["role"]))
+                lines.append(f"{label}：{row['content']}")
+            lines.append("")
+        return "\n".join(lines).strip()
+
+    def new_conversation(self) -> str:
+        conv_id = str(uuid.uuid4())
+        created_at = int(datetime.datetime.now().timestamp())
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO conversations (id, title, created_at, next_round_index)
+                VALUES (?, ?, ?, ?)
+                """,
+                (conv_id, "New Chat", created_at, 0),
+            )
+            conn.commit()
+        logger.info(
+            "Conversation created",
+            extra={"request_info": {"event": "conversation_created", "conversation_id": conv_id}},
+        )
+        return conv_id
+
+    def conversation_exists(self, conversation_id: str) -> bool:
+        if not conversation_id:
+            return False
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+            return row is not None
+
+    def add_message(self, conversation_id: str, role: str, content: str) -> None:
+        """
+        Append a single message.
+
+        Compatibility note:
+        - No compression is triggered here.
+        - next_round_index increments only when an assistant message follows a user message.
+        """
+        if role not in {"user", "assistant", "system"}:
+            raise ValueError(f"Invalid role: {role}")
+
+        with self._get_conn() as conn:
+            conv_row = conn.execute(
+                "SELECT id, next_round_index FROM conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if not conv_row:
+                raise ValueError(f"Conversation ID '{conversation_id}' does not exist.")
+
+            next_round_index = int(conv_row["next_round_index"] or 0)
+            round_index = next_round_index
+
+            previous = conn.execute(
+                """
+                SELECT role
+                FROM messages
+                WHERE conversation_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()
+            previous_role = previous["role"] if previous else None
+
+            created_at = int(datetime.datetime.now().timestamp())
+            conn.execute(
+                """
+                INSERT INTO messages (conversation_id, role, content, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (conversation_id, role, content, created_at),
+            )
+            self._archive_message(conn, conversation_id, role, content, round_index, created_at)
+
+            if role == "assistant" and previous_role == "user":
+                conn.execute(
+                    "UPDATE conversations SET next_round_index = ? WHERE id = ?",
+                    (next_round_index + 1, conversation_id),
+                )
+
+            conn.commit()
+
+    def persist_round(self, conversation_id: str, user_prompt: str, assistant_reply: str) -> None:
+        """Persist one complete user/assistant turn and advance round index."""
+        with self._get_conn() as conn:
+            conv_row = conn.execute(
+                "SELECT id, next_round_index FROM conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if not conv_row:
+                raise ValueError(f"Conversation ID '{conversation_id}' does not exist.")
+
+            round_index = int(conv_row["next_round_index"] or 0)
+            created_at = int(datetime.datetime.now().timestamp())
+
+            conn.execute(
+                """
+                INSERT INTO messages (conversation_id, role, content, created_at)
+                VALUES (?, 'user', ?, ?)
+                """,
+                (conversation_id, user_prompt, created_at),
+            )
+            conn.execute(
+                """
+                INSERT INTO messages (conversation_id, role, content, created_at)
+                VALUES (?, 'assistant', ?, ?)
+                """,
+                (conversation_id, assistant_reply, created_at),
+            )
+
+            self._archive_message(conn, conversation_id, "user", user_prompt, round_index, created_at)
+            self._archive_message(conn, conversation_id, "assistant", assistant_reply, round_index, created_at)
+
+            conn.execute(
+                "UPDATE conversations SET next_round_index = ? WHERE id = ?",
+                (round_index + 1, conversation_id),
+            )
+            conn.commit()
+
+    def get_transcript_payload(
+        self,
+        notion_client: Any,
+        conversation_id: str,
+        new_prompt: str,
+        model_name: str,
+        recall_query: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError(f"Conversation ID '{conversation_id}' does not exist.")
+
+            recent_messages = self._fetch_recent_messages(conn, conversation_id, self.WINDOW_SIZE)
+            summaries = self._fetch_recent_done_summaries(conn, conversation_id)
+            memory_degraded = self._has_failed_compression(conn, conversation_id)
+
+            recall_round_indices = self._search_recall_round_indices(
+                conn,
+                conversation_id,
+                recall_query or "",
+            )
+            recalled_text = self._format_recalled_archive(conn, conversation_id, recall_round_indices)
+
+        recent_messages = self._normalize_window_messages(recent_messages)
+        transcript: List[Dict[str, Any]] = []
+
+        transcript.append(self._build_config_block(model_name))
+        transcript.append(self._build_context_block(notion_client))
+
+        if memory_degraded:
             transcript.append(
                 self._build_dialog_block(
                     "user",
-                    f"Previous conversation summary:\n{summary_text}",
+                    "【系统状态标记】MEMORY_STATUS=degraded",
+                    notion_client,
+                )
+            )
+
+        # Summary injection must stay between context block and recent-window messages.
+        if summaries:
+            numbered = "\n".join(f"{idx + 1}. {item}" for idx, item in enumerate(summaries))
+            transcript.append(
+                self._build_dialog_block(
+                    "user",
+                    f"以下是本次对话的历史摘要（从早到晚）：\n{numbered}",
                     notion_client,
                 )
             )
             transcript.append(
                 self._build_dialog_block(
                     "assistant",
-                    "Understood, I have the context from our previous conversation.",
+                    "我已了解之前的对话背景。",
+                    notion_client,
+                )
+            )
+            logger.info(
+                "Injected compressed summaries into transcript",
+                extra={
+                    "request_info": {
+                        "event": "memory_summary_injected",
+                        "conversation_id": conversation_id,
+                        "summary_count": len(summaries),
+                    }
+                },
+            )
+
+        for msg in recent_messages:
+            transcript.append(self._build_dialog_block(msg["role"], msg["content"], notion_client))
+
+        if recalled_text:
+            transcript.append(
+                self._build_dialog_block(
+                    "user",
+                    (
+                        "【系统召回的相关历史记录】\n"
+                        f"{recalled_text}\n\n"
+                        "请基于以上历史回答用户的问题。"
+                    ),
+                    notion_client,
+                )
+            )
+            transcript.append(
+                self._build_dialog_block(
+                    "assistant",
+                    "我已查阅相关历史记录，将综合作答。",
                     notion_client,
                 )
             )
 
-        for msg in messages:
-            transcript.append(self._build_dialog_block(msg["role"], msg["content"], notion_client))
-
         transcript.append(self._build_dialog_block("user", new_prompt, notion_client))
-        return transcript
+        return {
+            "transcript": transcript,
+            "memory_degraded": memory_degraded,
+        }
+
+    def get_transcript(self, notion_client, conversation_id: str, new_prompt: str, model_name: str) -> list:
+        payload = self.get_transcript_payload(
+            notion_client=notion_client,
+            conversation_id=conversation_id,
+            new_prompt=new_prompt,
+            model_name=model_name,
+            recall_query=None,
+        )
+        return payload["transcript"]
 
     def delete_conversation(self, conversation_id: str) -> None:
-        """Delete one conversation."""
         with self._get_conn() as conn:
             conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
             conn.commit()
 
     def list_conversations(self) -> List[str]:
-        """Return all conversation ids sorted by creation time descending."""
         with self._get_conn() as conn:
             cursor = conn.execute("SELECT id FROM conversations ORDER BY created_at DESC")
             return [row["id"] for row in cursor.fetchall()]
+
+
+async def compress_round_if_needed(manager: ConversationManager, conversation_id: str) -> None:
+    """
+    Move old turns out of sliding window, archive raw text, and summarize with LLM.
+
+    Any failure is logged only and never raised to request path.
+    """
+    from app.summarizer import SummarizerUnavailableError, summarize_turn
+
+    try:
+        while True:
+            with manager._get_conn() as conn:
+                conv_row = conn.execute(
+                    """
+                    SELECT id, next_round_index
+                    FROM conversations
+                    WHERE id = ?
+                    """,
+                    (conversation_id,),
+                ).fetchone()
+                if not conv_row:
+                    return
+
+                message_count = manager._count_messages(conn, conversation_id)
+                if message_count <= manager.WINDOW_SIZE:
+                    return
+
+                oldest_rows = conn.execute(
+                    """
+                    SELECT id, role, content, created_at
+                    FROM messages
+                    WHERE conversation_id = ?
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT 2
+                    """,
+                    (conversation_id,),
+                ).fetchall()
+                if len(oldest_rows) < 2:
+                    return
+
+                oldest_user = oldest_rows[0]
+                oldest_assistant = oldest_rows[1]
+                if oldest_user["role"] != "user" or oldest_assistant["role"] != "assistant":
+                    logger.warning(
+                        "Skip compression due to non user/assistant oldest pair",
+                        extra={
+                            "request_info": {
+                                "event": "conversation_compress_skipped",
+                                "conversation_id": conversation_id,
+                                "roles": [oldest_user["role"], oldest_assistant["role"]],
+                            }
+                        },
+                    )
+                    return
+
+                next_round_index = int(conv_row["next_round_index"] or 0)
+                rounds_in_messages = max(message_count // 2, 1)
+                round_index = max(next_round_index - rounds_in_messages, 0)
+                created_at = int(datetime.datetime.now().timestamp())
+
+                conn.execute(
+                    "DELETE FROM messages WHERE id IN (?, ?)",
+                    (oldest_user["id"], oldest_assistant["id"]),
+                )
+                insert_cursor = conn.execute(
+                    """
+                    INSERT INTO compressed_summaries (
+                        conversation_id,
+                        round_index,
+                        user_content,
+                        assistant_content,
+                        summary,
+                        compress_status,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, NULL, 'pending', ?)
+                    """,
+                    (
+                        conversation_id,
+                        round_index,
+                        oldest_user["content"],
+                        oldest_assistant["content"],
+                        created_at,
+                    ),
+                )
+                summary_id = int(insert_cursor.lastrowid)
+
+                manager._archive_message(
+                    conn,
+                    conversation_id,
+                    "user",
+                    str(oldest_user["content"]),
+                    round_index,
+                    int(oldest_user["created_at"] or created_at),
+                )
+                manager._archive_message(
+                    conn,
+                    conversation_id,
+                    "assistant",
+                    str(oldest_assistant["content"]),
+                    round_index,
+                    int(oldest_assistant["created_at"] or created_at),
+                )
+
+                old_summary_rows = conn.execute(
+                    """
+                    SELECT summary
+                    FROM compressed_summaries
+                    WHERE conversation_id = ?
+                      AND compress_status = 'done'
+                      AND COALESCE(summary, '') <> ''
+                      AND round_index < ?
+                    ORDER BY round_index ASC
+                    """,
+                    (conversation_id, round_index),
+                ).fetchall()
+                old_summaries = [str(row["summary"] or "").strip() for row in old_summary_rows if str(row["summary"] or "").strip()]
+                logger.info(
+                    "Prepared cumulative old summaries for turn compression",
+                    extra={
+                        "request_info": {
+                            "event": "memory_cumulative_summaries_ready",
+                            "conversation_id": conversation_id,
+                            "current_round_index": round_index,
+                            "old_summary_count": len(old_summaries),
+                        }
+                    },
+                )
+                conn.commit()
+
+            try:
+                summary_text = await summarize_turn(
+                    old_summaries=old_summaries,
+                    user_msg=str(oldest_user["content"]),
+                    assistant_msg=str(oldest_assistant["content"]),
+                )
+            except SummarizerUnavailableError:
+                failure_time = int(datetime.datetime.now().timestamp())
+                with manager._get_conn() as conn:
+                    conn.execute(
+                        """
+                        UPDATE compressed_summaries
+                        SET compress_status = 'failed'
+                        WHERE id = ?
+                        """,
+                        (summary_id,),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE conversations
+                        SET compress_failed_at = ?
+                        WHERE id = ?
+                        """,
+                        (failure_time, conversation_id),
+                    )
+                    conn.commit()
+            except Exception:
+                failure_time = int(datetime.datetime.now().timestamp())
+                with manager._get_conn() as conn:
+                    conn.execute(
+                        """
+                        UPDATE compressed_summaries
+                        SET compress_status = 'failed'
+                        WHERE id = ?
+                        """,
+                        (summary_id,),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE conversations
+                        SET compress_failed_at = ?
+                        WHERE id = ?
+                        """,
+                        (failure_time, conversation_id),
+                    )
+                    conn.commit()
+                logger.error(
+                    "Failed to summarize compressed round",
+                    exc_info=True,
+                    extra={
+                        "request_info": {
+                            "event": "conversation_compress_summary_failed",
+                            "conversation_id": conversation_id,
+                            "round_index": round_index,
+                            "summary_id": summary_id,
+                        }
+                    },
+                )
+            else:
+                with manager._get_conn() as conn:
+                    conn.execute(
+                        """
+                        UPDATE compressed_summaries
+                        SET summary = ?, compress_status = 'done'
+                        WHERE id = ?
+                        """,
+                        (summary_text.strip(), summary_id),
+                    )
+                    conn.commit()
+    except Exception:
+        logger.error(
+            "compress_round_if_needed crashed",
+            exc_info=True,
+            extra={
+                "request_info": {
+                    "event": "conversation_compress_task_crashed",
+                    "conversation_id": conversation_id,
+                }
+            },
+        )

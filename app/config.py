@@ -32,6 +32,7 @@ ACCOUNTS = load_accounts()
 
 # FastAPI 服务配置
 API_KEY = os.getenv("API_KEY", "")
+SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 

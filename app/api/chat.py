@@ -1,11 +1,13 @@
 import json
+import re
 import time
 import uuid
 from typing import Any, Dict, Generator, Iterable, List, Tuple
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
+from app.conversation import compress_round_if_needed
 from app.limiter import limiter
 from app.logger import logger
 from app.model_registry import list_available_models
@@ -18,6 +20,22 @@ from app.schemas import (
 )
 
 router = APIRouter()
+
+RECALL_INTENT_KEYWORDS = [
+    "之前",
+    "上次",
+    "以前",
+    "你还记得",
+    "我们之前",
+    "earlier",
+    "before",
+    "recall",
+    "remember",
+    "之前说过",
+    "历史记录",
+    "找一下",
+    "搜索记忆",
+]
 
 
 def _build_stream_chunk(response_id: str, model: str, *, content: str = "", role: str = "", finish_reason=None) -> str:
@@ -77,7 +95,30 @@ def _iter_stream_items(first_item: Any, stream_gen: Iterable[Any]) -> Generator[
         yield item
 
 
-def _prepare_messages(req_body: ChatCompletionRequest) -> Tuple[str, List[Tuple[str, str]]]:
+def _contains_recall_intent(text: str) -> bool:
+    lowered = text.lower()
+    for keyword in RECALL_INTENT_KEYWORDS:
+        if keyword.isascii():
+            if keyword.lower() in lowered:
+                return True
+            continue
+        if keyword in text:
+            return True
+    return False
+
+
+def _extract_recall_query(text: str) -> str:
+    cleaned = text
+    for keyword in RECALL_INTENT_KEYWORDS:
+        if keyword.isascii():
+            cleaned = re.sub(rf"\b{re.escape(keyword)}\b", " ", cleaned, flags=re.IGNORECASE)
+        else:
+            cleaned = cleaned.replace(keyword, " ")
+    cleaned = re.sub(r"[\s，。！？、,.!?;:：]+", " ", cleaned).strip()
+    return cleaned or text.strip()
+
+
+def _prepare_messages(req_body: ChatCompletionRequest) -> Tuple[str, List[Tuple[str, str]], str]:
     system_messages = []
     dialogue_messages = []
 
@@ -95,6 +136,7 @@ def _prepare_messages(req_body: ChatCompletionRequest) -> Tuple[str, List[Tuple[
         )
 
     last_role, user_prompt = dialogue_messages[-1]
+    raw_user_prompt = user_prompt
     history_messages = dialogue_messages[:-1]
 
     if last_role != "user":
@@ -106,24 +148,40 @@ def _prepare_messages(req_body: ChatCompletionRequest) -> Tuple[str, List[Tuple[
         merged_system_prompt = "\n".join(system_messages)
         user_prompt = f"[System Instructions: {merged_system_prompt}]\n\n{user_prompt}"
 
-    return user_prompt, history_messages
+    return user_prompt, history_messages, raw_user_prompt
 
 
-def _persist_round(manager, conversation_id: str, user_prompt: str, assistant_reply: str) -> None:
-    manager.add_message(conversation_id, "user", user_prompt)
-    manager.add_message(conversation_id, "assistant", assistant_reply)
+def _persist_round(
+    manager,
+    background_tasks: BackgroundTasks,
+    conversation_id: str,
+    user_prompt: str,
+    assistant_reply: str,
+) -> None:
+    manager.persist_round(conversation_id, user_prompt, assistant_reply)
+    background_tasks.add_task(
+        compress_round_if_needed,
+        manager=manager,
+        conversation_id=conversation_id,
+    )
 
 
 @router.post("/chat/completions", tags=["chat"])
 @limiter.limit("10/minute")
-async def create_chat_completion(request: Request, req_body: ChatCompletionRequest):
+async def create_chat_completion(
+    request: Request,
+    req_body: ChatCompletionRequest,
+    background_tasks: BackgroundTasks,
+    response: Response,
+):
     """
     创建聊天请求，严格兼容 OpenAI API。
     """
     pool = request.app.state.account_pool
     manager = request.app.state.conversation_manager
 
-    user_prompt, history_messages = _prepare_messages(req_body)
+    user_prompt, history_messages, raw_user_prompt = _prepare_messages(req_body)
+    recall_query = _extract_recall_query(raw_user_prompt) if _contains_recall_intent(raw_user_prompt) else None
 
     available_models = list_available_models()
     if req_body.model not in available_models:
@@ -158,7 +216,17 @@ async def create_chat_completion(request: Request, req_body: ChatCompletionReque
         client = None
         try:
             client = pool.get_client()
-            transcript = manager.get_transcript(client, conversation_id, user_prompt, req_body.model)
+            transcript_payload = manager.get_transcript_payload(
+                notion_client=client,
+                conversation_id=conversation_id,
+                new_prompt=user_prompt,
+                model_name=req_body.model,
+                recall_query=recall_query,
+            )
+            transcript = transcript_payload["transcript"]
+            memory_degraded = bool(transcript_payload.get("memory_degraded"))
+            memory_headers = {"X-Memory-Status": "degraded"} if memory_degraded else {}
+
             stream_gen = client.stream_response(transcript)
             first_item = next(stream_gen, None)
 
@@ -234,7 +302,13 @@ async def create_chat_completion(request: Request, req_body: ChatCompletionReque
                 finally:
                     if full_text_accumulator.strip():
                         try:
-                            _persist_round(manager, conversation_id, user_prompt, full_text_accumulator)
+                            _persist_round(
+                                manager,
+                                background_tasks,
+                                conversation_id,
+                                user_prompt,
+                                full_text_accumulator,
+                            )
                         except Exception:
                             logger.error(
                                 "Failed to persist conversation round",
@@ -250,14 +324,17 @@ async def create_chat_completion(request: Request, req_body: ChatCompletionReque
                     yield "data: [DONE]\n\n"
 
             if req_body.stream:
+                stream_headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                    "X-Conversation-Id": conversation_id,
+                    **memory_headers,
+                }
                 return StreamingResponse(
                     openai_stream_generator(),
                     media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "X-Accel-Buffering": "no",
-                    },
+                    headers=stream_headers,
                 )
 
             content_parts: list[str] = []
@@ -273,7 +350,11 @@ async def create_chat_completion(request: Request, req_body: ChatCompletionReque
             if not full_text.strip():
                 raise NotionUpstreamError("Notion upstream returned empty content.", retriable=True)
 
-            _persist_round(manager, conversation_id, user_prompt, full_text)
+            _persist_round(manager, background_tasks, conversation_id, user_prompt, full_text)
+            response.headers["X-Conversation-Id"] = conversation_id
+            if memory_degraded:
+                response.headers["X-Memory-Status"] = "degraded"
+
             return ChatCompletionResponse(
                 id=response_id,
                 model=req_body.model,

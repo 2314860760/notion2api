@@ -200,6 +200,30 @@
             color: rgba(0, 0, 0, 0.3) !important;
         }
 
+        .memory-banner {
+            border-left: 3px solid #da7756;
+            background: #f2f0eb;
+            color: #2d2d2d;
+        }
+
+        html.dark .memory-banner {
+            background: #383838;
+            color: #e5e5e5;
+        }
+
+        .memory-banner-icon {
+            color: #da7756;
+        }
+
+        .memory-banner-close {
+            color: inherit;
+            opacity: 0.72;
+        }
+
+        .memory-banner-close:hover {
+            opacity: 1;
+        }
+
         /* Hide scrollbars for cleaner look like native apps */
         .no-scrollbar::-webkit-scrollbar {
             display: none;
@@ -500,6 +524,16 @@
             </button>
         </header>
 
+        <div id="memoryBanner" class="hidden px-4 sm:px-6 pt-2 relative z-20">
+            <div class="memory-banner max-w-3xl mx-auto rounded-xl px-4 py-3 text-sm flex items-start gap-3">
+                <span class="memory-banner-icon text-base leading-5">⚠️</span>
+                <div class="flex-1 leading-6">
+                    当前上下文记忆功能受限，部分历史可能无法被感知，如问题持续请联系管理员。
+                </div>
+                <button id="memoryBannerClose" type="button" class="memory-banner-close text-lg leading-5">✕</button>
+            </div>
+        </div>
+
         <!-- Initial Welcome Page (Displayed when chat is empty) -->
         <div id="welcomeScreen"
             class="absolute inset-0 flex flex-col items-center justify-center p-6 -mt-10 pointer-events-none z-0">
@@ -648,6 +682,7 @@
             controller: null, // For aborting fetch
             modelDisplayNames: {}
         };
+        let memoryDegradedNotified = false;
 
         // DOM Elements
         const DOM = {
@@ -665,6 +700,8 @@
             chatList: document.getElementById('chatList'),
 
             chatContainer: document.getElementById('chatContainer'),
+            memoryBanner: document.getElementById('memoryBanner'),
+            memoryBannerClose: document.getElementById('memoryBannerClose'),
             welcomeScreen: document.getElementById('welcomeScreen'),
             chatInput: document.getElementById('chatInput'),
             sendBtn: document.getElementById('sendBtn'),
@@ -716,6 +753,9 @@
             DOM.chatInput.addEventListener('input', autoResizeInput);
             DOM.chatInput.addEventListener('keydown', handleInputKeydown);
             DOM.sendBtn.addEventListener('click', handleSend);
+            DOM.memoryBannerClose.addEventListener('click', () => {
+                DOM.memoryBanner.classList.add('hidden');
+            });
 
             // Settings interactions
             DOM.settingsBtn.addEventListener('click', openSettings);
@@ -794,6 +834,12 @@
                 DOM.mobileBackdrop.classList.remove('opacity-100');
                 setTimeout(() => DOM.mobileBackdrop.classList.add('hidden'), 300);
             }
+        }
+
+        function notifyMemoryDegradedOnce() {
+            if (memoryDegradedNotified) return;
+            memoryDegradedNotified = true;
+            DOM.memoryBanner.classList.remove('hidden');
         }
 
         function autoResizeInput() {
@@ -1308,7 +1354,8 @@
                 chat = {
                     id: STATE.currentChatId,
                     title: text.length > 12 ? text.substring(0, 12) + '...' : text,
-                    messages: []
+                    messages: [],
+                    conversationId: null
                 };
                 STATE.chats.push(chat);
                 DOM.headerTitle.textContent = chat.title;
@@ -1348,10 +1395,21 @@
                     body: JSON.stringify({
                         model: selectedModel,
                         messages: chat.messages,
+                        conversation_id: chat.conversationId || null,
                         stream: true
                     }),
                     signal: STATE.controller.signal
                 });
+
+                const memoryStatus = (response.headers.get('X-Memory-Status') || '').toLowerCase();
+                if (memoryStatus === 'degraded') {
+                    notifyMemoryDegradedOnce();
+                }
+                const backendConversationId = (response.headers.get('X-Conversation-Id') || '').trim();
+                if (backendConversationId && chat.conversationId !== backendConversationId) {
+                    chat.conversationId = backendConversationId;
+                    saveChats();
+                }
 
                 if (!response.ok) {
                     throw new Error(`HTTP Error: ${response.status}`);
