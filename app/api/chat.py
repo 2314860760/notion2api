@@ -275,7 +275,7 @@ def _extract_recall_query(text: str) -> str:
     return cleaned or text.strip()
 
 
-def _prepare_messages(req_body: ChatCompletionRequest) -> Tuple[str, List[Tuple[str, str]], str]:
+def _prepare_messages(req_body: ChatCompletionRequest) -> Tuple[str, List[Tuple[str, str, str]], str]:
     system_messages = []
     dialogue_messages = []
 
@@ -284,7 +284,7 @@ def _prepare_messages(req_body: ChatCompletionRequest) -> Tuple[str, List[Tuple[
             if msg.content.strip():
                 system_messages.append(msg.content.strip())
             continue
-        dialogue_messages.append((msg.role, msg.content))
+        dialogue_messages.append((msg.role, msg.content, msg.thinking or ""))
 
     if not dialogue_messages:
         raise HTTPException(
@@ -292,7 +292,7 @@ def _prepare_messages(req_body: ChatCompletionRequest) -> Tuple[str, List[Tuple[
             detail="The messages list must contain at least one user message.",
         )
 
-    last_role, user_prompt = dialogue_messages[-1]
+    last_role, user_prompt, _ = dialogue_messages[-1]
     raw_user_prompt = user_prompt
     history_messages = dialogue_messages[:-1]
 
@@ -314,8 +314,14 @@ def _persist_round(
     conversation_id: str,
     user_prompt: str,
     assistant_reply: str,
+    assistant_thinking: str = "",
 ) -> None:
-    manager.persist_round(conversation_id, user_prompt, assistant_reply)
+    manager.persist_round(
+        conversation_id,
+        user_prompt,
+        assistant_reply,
+        assistant_thinking=assistant_thinking,
+    )
     background_tasks.add_task(
         compress_round_if_needed,
         manager=manager,
@@ -380,8 +386,39 @@ async def create_chat_completion(
         conversation_id = manager.new_conversation()
         restore_history = True
 
-    if restore_history and history_messages:
-        _persist_history_messages(manager, conversation_id, history_messages)
+    # 关键修复：总是持久化客户端发送的历史消息，避免上下文丢失
+    # 即使 conversation_id 已存在，也需要同步客户端发送的完整历史
+    if history_messages:
+        # 检查是否需要持久化（避免重复）
+        with manager._get_conn() as conn:
+            existing_count = manager._count_messages(conn, conversation_id)
+            history_count = len(history_messages)
+
+            # 只有当客户端发送的历史消息多于数据库中的消息时才持久化
+            # 这样可以：
+            # 1. 避免重复持久化相同的历史
+            # 2. 确保客户端发送的完整历史被保存
+            # 3. 解决"滑动窗口缺失 AI 回复"的 bug
+            if history_count > existing_count:
+                _persist_history_messages(manager, conversation_id, history_messages)
+                restored_user_count = sum(1 for role, _ in history_messages if role == "user")
+                restored_assistant_count = sum(1 for role, _ in history_messages if role == "assistant")
+
+                logger.info(
+                    "Restored history into conversation",
+                    extra={
+                        "request_info": {
+                            "event": "conversation_history_restored",
+                            "conversation_id": conversation_id,
+                            "restore_history_flag": restore_history,
+                            "existing_count": existing_count,
+                            "history_count": history_count,
+                            "restored_total": len(history_messages),
+                            "restored_user_count": restored_user_count,
+                            "restored_assistant_count": restored_assistant_count,
+                        }
+                    },
+                )
 
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     max_retries = min(3, len(pool.clients))
@@ -611,7 +648,12 @@ async def create_chat_completion(
                             reply_decision=reply_decision,
                         )
 
-                    if final_reply.strip():
+                    persisted_thinking = (
+                        str(thinking_replacement["thinking"])
+                        if thinking_replacement is not None
+                        else thinking_accumulator
+                    )
+                    if final_reply.strip() or persisted_thinking.strip():
                         try:
                             _persist_round(
                                 manager,
@@ -619,6 +661,7 @@ async def create_chat_completion(
                                 conversation_id,
                                 user_prompt,
                                 final_reply,
+                                persisted_thinking,
                             )
                         except Exception:
                             logger.error(
@@ -649,6 +692,7 @@ async def create_chat_completion(
                 )
 
             content_parts: list[str] = []
+            thinking_parts: list[str] = []
             authoritative_final_content = ""
             authoritative_final_source_type = ""
             for raw_item in _iter_stream_items(first_item, stream_gen):
@@ -659,6 +703,11 @@ async def create_chat_completion(
                     if final_text:
                         authoritative_final_content = final_text
                         authoritative_final_source_type = str(item.get("source_type", "") or "")
+                    continue
+                if item_type == "thinking":
+                    thinking_text = str(item.get("text", "") or "")
+                    if thinking_text:
+                        thinking_parts.append(thinking_text)
                     continue
                 if item_type != "content":
                     continue
@@ -671,20 +720,29 @@ async def create_chat_completion(
                 authoritative_final_content,
                 authoritative_final_source_type,
             )
-            if not full_text.strip():
+            merged_thinking = "".join(thinking_parts).strip()
+            if not full_text.strip() and not merged_thinking:
                 raise NotionUpstreamError("Notion upstream returned empty content.", retriable=True)
 
-            _persist_round(manager, background_tasks, conversation_id, user_prompt, full_text)
+            _persist_round(
+                manager,
+                background_tasks,
+                conversation_id,
+                user_prompt,
+                full_text,
+                merged_thinking,
+            )
             response.headers["X-Conversation-Id"] = conversation_id
             if memory_degraded:
                 response.headers["X-Memory-Status"] = "degraded"
 
+            response_text = full_text if full_text.strip() else "[assistant_no_visible_content]"
             return ChatCompletionResponse(
                 id=response_id,
                 model=req_body.model,
                 choices=[
                     ChatMessageResponseChoice(
-                        message=ChatMessage(role="assistant", content=full_text)
+                        message=ChatMessage(role="assistant", content=response_text)
                     )
                 ],
             )

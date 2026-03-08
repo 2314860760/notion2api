@@ -1,5 +1,6 @@
 import datetime
 import os
+import re
 import sqlite3
 import uuid
 from typing import Any, Dict, List, Optional
@@ -14,6 +15,7 @@ class ConversationManager:
     WINDOW_SIZE = 10
     SUMMARY_INJECT_LIMIT = 15
     RECALL_LIMIT = 5
+    ASSISTANT_EMPTY_PLACEHOLDER = "[assistant_no_visible_content]"
 
     def __init__(self):
         self.db_path = os.getenv("DB_PATH", "./data/conversations.db")
@@ -104,6 +106,7 @@ class ConversationManager:
             self._ensure_column(conn, "conversations", "summary TEXT")
             self._ensure_column(conn, "conversations", "next_round_index INTEGER DEFAULT 0")
             self._ensure_column(conn, "conversations", "compress_failed_at INTEGER")
+            self._ensure_column(conn, "messages", "thinking TEXT")
 
             # Backfill next_round_index for pre-migration conversations that already had history.
             conn.execute(
@@ -137,7 +140,7 @@ class ConversationManager:
     ) -> List[Dict[str, str]]:
         rows = conn.execute(
             """
-            SELECT role, content
+            SELECT role, content, COALESCE(thinking, '') AS thinking
             FROM messages
             WHERE conversation_id = ?
             ORDER BY created_at DESC, id DESC
@@ -145,9 +148,31 @@ class ConversationManager:
             """,
             (conversation_id, limit),
         ).fetchall()
-        messages = [{"role": r["role"], "content": r["content"]} for r in rows]
+        messages = [
+            {
+                "role": str(r["role"] or ""),
+                "content": str(r["content"] or ""),
+                "thinking": str(r["thinking"] or ""),
+            }
+            for r in rows
+        ]
         messages.reverse()
         return messages
+
+    def _build_assistant_memory_text(self, content: str, thinking: str) -> str:
+        """Build a stable assistant text for memory pairing/compression."""
+        content_text = str(content or "")
+        if content_text.strip():
+            return content_text
+
+        thinking_text = str(thinking or "").strip()
+        if not thinking_text:
+            return self.ASSISTANT_EMPTY_PLACEHOLDER
+
+        compact = re.sub(r"\s+", " ", thinking_text)
+        if len(compact) > 180:
+            compact = compact[:180].rstrip() + "..."
+        return f"[assistant_thinking_only] {compact}"
 
     def _normalize_window_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
@@ -166,11 +191,24 @@ class ConversationManager:
         for msg in messages:
             role = msg.get("role", "")
             content = str(msg.get("content", "") or "")
+            thinking = str(msg.get("thinking", "") or "")
             if role not in {"user", "assistant"}:
                 continue
-            if not content.strip():
+
+            if role == "user":
+                if not content.strip():
+                    continue
+                normalized.append({"role": role, "content": content, "thinking": ""})
                 continue
-            normalized.append({"role": role, "content": content})
+
+            # assistant: keep pair continuity even if visible content is empty.
+            normalized.append(
+                {
+                    "role": role,
+                    "content": self._build_assistant_memory_text(content, thinking),
+                    "thinking": thinking,
+                }
+            )
 
         # 第二步：确保消息是成对的 user → assistant
         paired: List[Dict[str, str]] = []
@@ -510,7 +548,7 @@ class ConversationManager:
             ).fetchone()
             return row is not None
 
-    def add_message(self, conversation_id: str, role: str, content: str) -> None:
+    def add_message(self, conversation_id: str, role: str, content: str, thinking: str = "") -> None:
         """
         Append a single message.
 
@@ -545,14 +583,47 @@ class ConversationManager:
             previous_role = previous["role"] if previous else None
 
             created_at = int(datetime.datetime.now().timestamp())
+
+            # 关键修复：检测并避免重复插入相同的消息
+            # 检查最后一条消息是否与当前消息相同（role + content）
+            last_message = conn.execute(
+                """
+                SELECT role, content
+                FROM messages
+                WHERE conversation_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()
+
+            if last_message and str(last_message["role"]) == role and str(last_message["content"]) == content:
+                logger.debug(
+                    "Duplicate message detected, skipping insertion",
+                    extra={
+                        "request_info": {
+                            "event": "conversation_duplicate_message_skipped",
+                            "conversation_id": conversation_id,
+                            "role": role,
+                            "content_length": len(content),
+                        }
+                    },
+                )
+                return
+
+            archive_text = (
+                self._build_assistant_memory_text(content, thinking)
+                if role == "assistant"
+                else content
+            )
             conn.execute(
                 """
-                INSERT INTO messages (conversation_id, role, content, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO messages (conversation_id, role, content, thinking, created_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (conversation_id, role, content, created_at),
+                (conversation_id, role, content, thinking, created_at),
             )
-            self._archive_message(conn, conversation_id, role, content, round_index, created_at)
+            self._archive_message(conn, conversation_id, role, archive_text, round_index, created_at)
 
             if role == "assistant" and previous_role == "user":
                 conn.execute(
@@ -562,7 +633,13 @@ class ConversationManager:
 
             conn.commit()
 
-    def persist_round(self, conversation_id: str, user_prompt: str, assistant_reply: str) -> None:
+    def persist_round(
+        self,
+        conversation_id: str,
+        user_prompt: str,
+        assistant_reply: str,
+        assistant_thinking: str = "",
+    ) -> None:
         """Persist one complete user/assistant turn and advance round index."""
         with self._get_conn() as conn:
             conv_row = conn.execute(
@@ -577,21 +654,29 @@ class ConversationManager:
 
             conn.execute(
                 """
-                INSERT INTO messages (conversation_id, role, content, created_at)
-                VALUES (?, 'user', ?, ?)
+                INSERT INTO messages (conversation_id, role, content, thinking, created_at)
+                VALUES (?, 'user', ?, '', ?)
                 """,
                 (conversation_id, user_prompt, created_at),
             )
             conn.execute(
                 """
-                INSERT INTO messages (conversation_id, role, content, created_at)
-                VALUES (?, 'assistant', ?, ?)
+                INSERT INTO messages (conversation_id, role, content, thinking, created_at)
+                VALUES (?, 'assistant', ?, ?, ?)
                 """,
-                (conversation_id, assistant_reply, created_at),
+                (conversation_id, assistant_reply, assistant_thinking, created_at),
             )
 
+            assistant_memory_text = self._build_assistant_memory_text(assistant_reply, assistant_thinking)
             self._archive_message(conn, conversation_id, "user", user_prompt, round_index, created_at)
-            self._archive_message(conn, conversation_id, "assistant", assistant_reply, round_index, created_at)
+            self._archive_message(
+                conn,
+                conversation_id,
+                "assistant",
+                assistant_memory_text,
+                round_index,
+                created_at,
+            )
 
             conn.execute(
                 "UPDATE conversations SET next_round_index = ? WHERE id = ?",
@@ -764,7 +849,7 @@ async def compress_round_if_needed(manager: ConversationManager, conversation_id
 
                 oldest_rows = conn.execute(
                     """
-                    SELECT id, role, content, created_at
+                    SELECT id, role, content, COALESCE(thinking, '') AS thinking, created_at
                     FROM messages
                     WHERE conversation_id = ?
                     ORDER BY created_at ASC, id ASC
@@ -824,7 +909,10 @@ async def compress_round_if_needed(manager: ConversationManager, conversation_id
                     "user_id": int(oldest_user["id"]),
                     "assistant_id": int(oldest_assistant["id"]),
                     "user_content": str(oldest_user["content"]),
-                    "assistant_content": str(oldest_assistant["content"]),
+                    "assistant_content": manager._build_assistant_memory_text(
+                        str(oldest_assistant["content"]),
+                        str(oldest_assistant["thinking"]),
+                    ),
                     "user_created_at": int(oldest_user["created_at"] or created_at),
                     "assistant_created_at": int(oldest_assistant["created_at"] or created_at),
                     "round_index": round_index,
