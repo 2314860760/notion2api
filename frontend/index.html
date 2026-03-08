@@ -766,6 +766,8 @@
 
         // --- 2. Initialization ---
         function init() {
+            STATE.chats = sanitizeChats(STATE.chats);
+            saveChats();
             applyTheme(STATE.theme);
             loadModels();
             renderChatList();
@@ -971,6 +973,48 @@
             return STATE.modelDisplayNames[modelId] || modelId;
         }
 
+        function sanitizeChats(chats) {
+            if (!Array.isArray(chats)) return [];
+
+            return chats
+                .map(chat => {
+                    const messages = Array.isArray(chat?.messages)
+                        ? chat.messages
+                            .map(msg => {
+                                if (!msg || typeof msg !== 'object') return null;
+                                if (msg.role !== 'user' && msg.role !== 'assistant') return null;
+
+                                const content = typeof msg.content === 'string' ? msg.content : '';
+                                if (msg.role === 'user') {
+                                    if (!content.trim()) return null;
+                                    return { role: 'user', content };
+                                }
+
+                                const thinking = typeof msg.thinking === 'string' ? msg.thinking : '';
+                                const search = normalizeSearchPayload(msg.search);
+                                const modelDisplayName = typeof msg.modelDisplayName === 'string' ? msg.modelDisplayName : null;
+                                const hasSearch = (search.queries.length + search.sources.length) > 0;
+                                if (!content.trim() && !thinking.trim() && !hasSearch) return null;
+
+                                return {
+                                    role: 'assistant',
+                                    content,
+                                    thinking,
+                                    search,
+                                    modelDisplayName
+                                };
+                            })
+                            .filter(Boolean)
+                        : [];
+
+                    return {
+                        ...chat,
+                        messages
+                    };
+                })
+                .filter(chat => chat && typeof chat.id !== 'undefined');
+        }
+
         // --- 6. Chat Logic Management ---
         function saveChats() {
             localStorage.setItem('claude_chats', JSON.stringify(STATE.chats));
@@ -1004,7 +1048,19 @@
             DOM.headerTitle.classList.remove('opacity-0');
 
             chat.messages.forEach(msg => {
-                appendMessageToDOM(msg.role, msg.content, true);
+                const wrapper = appendMessageToDOM(msg.role, msg.content, true, msg.modelDisplayName || null);
+                if (msg.role === 'assistant') {
+                    const restoredThinking = typeof msg.thinking === 'string' ? msg.thinking : '';
+                    const restoredSearch = normalizeSearchPayload(msg.search);
+                    if (restoredThinking.trim()) {
+                        wrapper.thinkingText = restoredThinking;
+                        updateThinkingPanel(wrapper);
+                    }
+                    if ((restoredSearch.queries.length + restoredSearch.sources.length) > 0) {
+                        wrapper.searchData = restoredSearch;
+                        updateSearchPanel(wrapper);
+                    }
+                }
             });
 
             if (window.innerWidth < 768) toggleSidebar(false);
@@ -1309,7 +1365,11 @@
                 bubble.appendChild(mdDiv);
 
                 if (content === '') {
-                    mdDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+                    if (isFinished) {
+                        setSafeMarkdown(mdDiv, '*未收到可显示的正文回复。*');
+                    } else {
+                        mdDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+                    }
                 } else {
                     setSafeMarkdown(mdDiv, content);
                     if (isFinished) {
@@ -1444,6 +1504,13 @@
 
             try {
                 STATE.controller = new AbortController();
+                const requestMessages = chat.messages
+                    .filter(msg => (
+                        msg
+                        && typeof msg === 'object'
+                        && (msg.role === 'user' || (msg.role === 'assistant' && typeof msg.content === 'string' && msg.content.trim()))
+                    ))
+                    .map(msg => ({ role: msg.role, content: String(msg.content || '') }));
                 const response = await fetch(`${STATE.baseUrl}/v1/chat/completions`, {
                     method: 'POST',
                     headers: {
@@ -1453,7 +1520,7 @@
                     },
                     body: JSON.stringify({
                         model: selectedModel,
-                        messages: chat.messages,
+                        messages: requestMessages,
                         conversation_id: chat.conversationId || null,
                         stream: true
                     }),
@@ -1509,6 +1576,22 @@
                         return;
                     }
 
+                    if (dataObj?.type === 'content_replace') {
+                        const replacement = typeof dataObj.content === 'string' ? dataObj.content : '';
+                        if (replacement) {
+                            fullAiReply = replacement;
+                            updateAIMessageDOM(aiWrapper, fullAiReply, false);
+                        }
+                        return;
+                    }
+
+                    if (dataObj?.type === 'thinking_replace') {
+                        thinkingText = typeof dataObj.thinking === 'string' ? dataObj.thinking : '';
+                        aiWrapper.thinkingText = thinkingText;
+                        updateThinkingPanel(aiWrapper);
+                        return;
+                    }
+
                     const deltaReasoning = dataObj?.choices?.[0]?.delta?.reasoning_content || '';
                     if (deltaReasoning) {
                         thinkingText += deltaReasoning;
@@ -1549,10 +1632,32 @@
                 updateSearchPanel(aiWrapper);
                 aiWrapper.thinkingText = thinkingText;
                 updateThinkingPanel(aiWrapper);
-                updateAIMessageDOM(aiWrapper, fullAiReply, true);
-
-                chat.messages.push({ role: 'assistant', content: fullAiReply });
-                saveChats();
+                const normalizedSearchSnapshot = normalizeSearchPayload(searchState);
+                const hasThinking = thinkingText.trim().length > 0;
+                const hasSearch = (normalizedSearchSnapshot.queries.length + normalizedSearchSnapshot.sources.length) > 0;
+                if (fullAiReply.trim()) {
+                    updateAIMessageDOM(aiWrapper, fullAiReply, true);
+                    chat.messages.push({
+                        role: 'assistant',
+                        content: fullAiReply,
+                        thinking: thinkingText,
+                        search: normalizedSearchSnapshot,
+                        modelDisplayName: selectedModelDisplayName
+                    });
+                    saveChats();
+                } else if (hasThinking || hasSearch) {
+                    updateAIMessageDOM(aiWrapper, '*未收到可显示的正文回复。*', true);
+                    chat.messages.push({
+                        role: 'assistant',
+                        content: '',
+                        thinking: thinkingText,
+                        search: normalizedSearchSnapshot,
+                        modelDisplayName: selectedModelDisplayName
+                    });
+                    saveChats();
+                } else {
+                    updateAIMessageDOM(aiWrapper, '*未收到可显示的正文回复。*', true);
+                }
 
             } catch (err) {
                 if (err.name !== 'AbortError') {

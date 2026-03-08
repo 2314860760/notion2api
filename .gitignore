@@ -32,6 +32,9 @@ logs/
 
 # AI Development Notes & Tools (SECURITY: Do not commit internal notes)
 AI-note/
+GEMINI.md
+CODEX.md
+ref/
 delete_by_threadID.py
 *.md.bak
 

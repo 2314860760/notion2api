@@ -52,6 +52,14 @@ _TOOL_TYPES = ("agent-tool-result", "tool_use", "tool", "search", "web", "citati
 SEG_THINKING = "thinking"
 SEG_TOOL = "tool"
 SEG_CONTENT = "content"
+SEG_META = "meta"
+
+FINAL_STEP_PRIORITIES: dict[str, int] = {
+    "markdown-chat": 400,
+    "agent-inference": 300,
+    "text": 200,
+    "title": 50,
+}
 
 
 def _strip_lang_tags(text: str, in_tag: list[bool]) -> str:
@@ -401,8 +409,6 @@ def _extract_text_from_patch(patch: dict[str, Any]) -> str:
                     if isinstance(item, dict) and isinstance(item.get("content"), str):
                         text_parts.append(str(item.get("content", "")))
                 content = "".join(text_parts)
-            elif isinstance(val, str) and patch.get("type") == "title":
-                content = f"\n[??]: {val}\n"
 
     elif patch_op == "x" and "v" in patch:
         content = patch["v"] if isinstance(patch["v"], str) else ""
@@ -446,6 +452,157 @@ def _extract_search_data_from_json_text(text: str) -> dict[str, Any]:
     return _dedupe_search_data(extracted)
 
 
+def _clean_extracted_text(text: str) -> str:
+    if not text:
+        return ""
+    in_lang_tag = [False]
+    in_primary_attr = [False]
+    cleaned = _strip_lang_tags(text, in_lang_tag)
+    cleaned = _strip_primary_attr_fragments(cleaned, in_primary_attr)
+    cleaned = _clean_notion_markup(cleaned)
+    return cleaned.strip()
+
+
+def _extract_text_from_value_items(value_items: Any) -> str:
+    if not isinstance(value_items, list):
+        return ""
+
+    parts: list[str] = []
+    for item in value_items:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type", "") or "").lower() != "text":
+            continue
+        content = item.get("content")
+        if isinstance(content, str) and content:
+            parts.append(content)
+    return "".join(parts)
+
+
+def _extract_markdown_chat_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type", "") or "").lower()
+            if item_type == "text" and isinstance(item.get("content"), str):
+                parts.append(str(item.get("content", "")))
+                continue
+            nested_value = item.get("value")
+            if nested_value is not None:
+                nested_text = _extract_markdown_chat_text(nested_value)
+                if nested_text:
+                    parts.append(nested_text)
+        return "".join(parts)
+    if isinstance(value, dict):
+        for key in ("value", "content", "text"):
+            if key in value:
+                nested_text = _extract_markdown_chat_text(value.get(key))
+                if nested_text:
+                    return nested_text
+    return ""
+
+
+def _extract_markdown_chat_patch_text(patch: dict[str, Any]) -> tuple[str, str] | None:
+    patch_op = str(patch.get("o", "") or "")
+    patch_v = patch.get("v")
+
+    if (
+        patch_op == "a"
+        and isinstance(patch_v, dict)
+        and str(patch_v.get("type", "") or "").lower() == "markdown-chat"
+    ):
+        cleaned = _clean_extracted_text(_extract_markdown_chat_text(patch_v.get("value")))
+        if cleaned:
+            return ("final_content", cleaned)
+
+    return None
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return 0
+
+
+def _extract_final_content_from_record_map(data: dict[str, Any]) -> dict[str, Any] | None:
+    record_map = data.get("recordMap")
+    if not isinstance(record_map, dict):
+        return None
+
+    thread_messages = record_map.get("thread_message")
+    if not isinstance(thread_messages, dict):
+        return None
+
+    candidates: list[dict[str, Any]] = []
+
+    for msg_id, msg_data in thread_messages.items():
+        if not isinstance(msg_data, dict):
+            continue
+
+        outer_value = msg_data.get("value")
+        if not isinstance(outer_value, dict):
+            continue
+        inner_value = outer_value.get("value")
+        if not isinstance(inner_value, dict):
+            continue
+        step = inner_value.get("step")
+        if not isinstance(step, dict):
+            continue
+
+        step_type = str(step.get("type", "") or "").lower()
+        content = ""
+
+        if step_type == "markdown-chat":
+            content = _extract_markdown_chat_text(step.get("value"))
+        elif step_type == "agent-inference":
+            content = _extract_text_from_value_items(step.get("value"))
+        elif step_type in {"text", "title"}:
+            raw_value = step.get("value")
+            if isinstance(raw_value, str):
+                content = raw_value
+
+        cleaned = _clean_extracted_text(content)
+        if cleaned:
+            candidates.append(
+                {
+                    "message_id": str(msg_id),
+                    "step_type": step_type or "unknown",
+                    "priority": FINAL_STEP_PRIORITIES.get(step_type, 100),
+                    "created_at": _safe_int(outer_value.get("created_time")),
+                    "edited_at": _safe_int(outer_value.get("last_edited_time")),
+                    "length": len(cleaned),
+                    "text": cleaned,
+                }
+            )
+
+    if not candidates:
+        return None
+
+    best = max(
+        candidates,
+        key=lambda candidate: (
+            int(candidate.get("priority", 0)),
+            int(candidate.get("edited_at", 0)),
+            int(candidate.get("created_at", 0)),
+            int(candidate.get("length", 0)),
+        ),
+    )
+    return {
+        "text": str(best.get("text", "") or ""),
+        "source_type": str(best.get("step_type", "") or "unknown"),
+        "source_message_id": str(best.get("message_id", "") or ""),
+        "source_length": int(best.get("length", 0)),
+    }
+
+
 def _classify_segment_type(effective_type: str) -> str:
     """
     根据 o:"a" patch 的 type 字段判断新段落的角色。
@@ -453,8 +610,10 @@ def _classify_segment_type(effective_type: str) -> str:
     """
     if not effective_type:
         return SEG_CONTENT
-    if effective_type in ("text", "title"):
+    if effective_type == "text":
         return SEG_CONTENT
+    if effective_type == "title":
+        return SEG_META
     if any(kw in effective_type for kw in _THINKING_TYPES):
         return SEG_THINKING
     if any(kw in effective_type for kw in _TOOL_TYPES):
@@ -507,7 +666,21 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
         except json.JSONDecodeError:
             continue
 
-        if data.get("type") != "patch":
+        data_type = str(data.get("type", "") or "").lower()
+
+        if data_type == "record-map":
+            final_payload = _extract_final_content_from_record_map(data)
+            if final_payload and final_payload.get("text"):
+                yield {"type": "final_content", **final_payload}
+            continue
+
+        if data_type == "markdown-chat":
+            cleaned = _clean_extracted_text(_extract_markdown_chat_text(data.get("value")))
+            if cleaned:
+                yield {"type": "final_content", "text": cleaned, "source_type": "markdown-chat-event"}
+            continue
+
+        if data_type != "patch":
             continue
 
         patches = data.get("v", [])
@@ -522,6 +695,15 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
             patch_v = patch.get("v")
             patch_path = _normalize_path(patch)
             patch_seg = _extract_segment_index(patch_path)
+
+            markdown_chat_patch = _extract_markdown_chat_patch_text(patch)
+            if markdown_chat_patch is not None:
+                event_type, event_text = markdown_chat_patch
+                if event_type == "final_content":
+                    yield {"type": event_type, "text": event_text, "source_type": "markdown-chat-patch"}
+                else:
+                    yield {"type": event_type, "text": event_text}
+                continue
 
             # 提取 effective type（优先 patch.type，其次 v.type）
             patch_type = str(patch.get("type", "") or "").lower()
@@ -651,6 +833,8 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                 continue
 
             # ========== 按段落角色输出 ==========
+            if seg_owner == SEG_META:
+                continue
             if seg_owner in (SEG_THINKING, SEG_TOOL):
                 yield {"type": "thinking", "text": cleaned}
             else:

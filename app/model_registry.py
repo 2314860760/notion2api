@@ -28,6 +28,20 @@ def get_notion_model(model_name: str) -> str:
     return MODEL_MAP.get(model_name, MODEL_MAP[DEFAULT_MODEL])
 
 
+def is_gemini_model(model_name: str) -> bool:
+    standard_name = get_standard_model(model_name)
+    if standard_name.startswith("gemini-"):
+        return True
+    notion_model = get_notion_model(standard_name)
+    return notion_model.startswith("vertex-") or notion_model.startswith("galette-")
+
+
+def get_thread_type(model_name: str) -> str:
+    if is_gemini_model(model_name):
+        return "markdown-chat"
+    return "workflow"
+
+
 def get_standard_model(model_name: str) -> str:
     if model_name in MODEL_MAP:
         return model_name

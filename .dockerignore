@@ -40,11 +40,14 @@ logs/
 .gitignore
 
 # Documentation
+# README.md is usually needed
+# We want to INCLUDE GEMINI.md, CODEX.md, and ref/ for debugging
+# So we remove *.md and docs/ if they might catch them, 
+# or just allow them specifically.
 README.md
-*.md
 docs/
 
-# AI Development Notes (Do not include in Docker image)
+# AI Development Notes (AI-note is still ignored for size/security)
 AI-note/
 
 # Testing

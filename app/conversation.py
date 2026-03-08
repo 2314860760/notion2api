@@ -5,6 +5,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from app.logger import logger
+from app.model_registry import get_thread_type, is_gemini_model
 
 
 class ConversationManager:
@@ -153,11 +154,14 @@ class ConversationManager:
         expected_role = "user"
         for msg in messages:
             role = msg.get("role", "")
+            content = str(msg.get("content", "") or "")
             if role not in {"user", "assistant"}:
+                continue
+            if not content.strip():
                 continue
             if role != expected_role:
                 continue
-            normalized.append({"role": role, "content": msg.get("content", "")})
+            normalized.append({"role": role, "content": content})
             expected_role = "assistant" if expected_role == "user" else "user"
 
         # Keep transcript append-safe for a new user prompt.
@@ -183,7 +187,21 @@ class ConversationManager:
             (conversation_id, role, content, round_index, created_at),
         )
 
-    def _build_dialog_block(self, role: str, content: str, notion_client: Any) -> Dict[str, Any]:
+    def _build_dialog_block(
+        self,
+        role: str,
+        content: str,
+        notion_client: Any,
+        *,
+        gemini_mode: bool = False,
+    ) -> Dict[str, Any]:
+        if role == "assistant" and gemini_mode:
+            return {
+                "id": str(uuid.uuid4()),
+                "type": "agent-inference",
+                "value": [{"type": "text", "content": content}],
+            }
+
         block: Dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "type": role,
@@ -193,12 +211,39 @@ class ConversationManager:
             block["userId"] = notion_client.user_id
         return block
 
-    def _build_config_block(self, model_name: str) -> Dict[str, Any]:
+    def _build_config_block(self, model_name: str, *, gemini_mode: bool = False) -> Dict[str, Any]:
+        thread_type = get_thread_type(model_name)
+        if gemini_mode:
+            return {
+                "id": str(uuid.uuid4()),
+                "type": "config",
+                "value": {
+                    "type": thread_type,
+                    "model": model_name,
+                    "modelFromUser": True,
+                    "useWebSearch": True,
+                    "isCustomAgent": False,
+                    "enableAgentAutomations": False,
+                    "enableAgentIntegrations": False,
+                    "enableBackgroundAgents": False,
+                    "enableCodegenIntegration": False,
+                    "enableCustomAgents": False,
+                    "enableExperimentalIntegrations": False,
+                    "enableLinkedDatabases": False,
+                    "enableAgentViewVersionHistoryTool": False,
+                    "enableDatabaseAgents": False,
+                    "enableAgentComments": False,
+                    "enableAgentForms": False,
+                    "enableAgentMakesFormulas": False,
+                    "enableUserSessionContext": False,
+                    "searchScopes": [{"type": "everything"}],
+                },
+            }
         return {
             "id": str(uuid.uuid4()),
             "type": "config",
             "value": {
-                "type": "workflow",
+                "type": thread_type,
                 "model": model_name,
                 "modelFromUser": True,
                 "useWebSearch": True,
@@ -255,7 +300,8 @@ class ConversationManager:
             },
         }
 
-    def _build_context_block(self, notion_client: Any) -> Dict[str, Any]:
+    def _build_context_block(self, notion_client: Any, *, gemini_mode: bool = False) -> Dict[str, Any]:
+        surface = "ai_module" if gemini_mode else "workflows"
         return {
             "id": str(uuid.uuid4()),
             "type": "context",
@@ -268,7 +314,7 @@ class ConversationManager:
                 "spaceId": notion_client.space_id,
                 "spaceViewId": notion_client.space_view_id,
                 "currentDatetime": datetime.datetime.now().astimezone().isoformat(),
-                "surface": "ai_module",
+                "surface": surface,
                 "agentName": notion_client.user_name,
             },
         }
@@ -559,9 +605,10 @@ class ConversationManager:
 
         recent_messages = self._normalize_window_messages(recent_messages)
         transcript: List[Dict[str, Any]] = []
+        gemini_mode = is_gemini_model(model_name)
 
-        transcript.append(self._build_config_block(model_name))
-        transcript.append(self._build_context_block(notion_client))
+        transcript.append(self._build_config_block(model_name, gemini_mode=gemini_mode))
+        transcript.append(self._build_context_block(notion_client, gemini_mode=gemini_mode))
 
         # Summary injection must stay between context block and recent-window messages.
         if summaries:
@@ -571,6 +618,7 @@ class ConversationManager:
                     "user",
                     f"以下是本次对话的历史摘要（从早到晚）：\n{numbered}",
                     notion_client,
+                    gemini_mode=gemini_mode,
                 )
             )
             transcript.append(
@@ -578,6 +626,7 @@ class ConversationManager:
                     "assistant",
                     "我已了解之前的对话背景。",
                     notion_client,
+                    gemini_mode=gemini_mode,
                 )
             )
             logger.info(
@@ -592,7 +641,14 @@ class ConversationManager:
             )
 
         for msg in recent_messages:
-            transcript.append(self._build_dialog_block(msg["role"], msg["content"], notion_client))
+            transcript.append(
+                self._build_dialog_block(
+                    msg["role"],
+                    msg["content"],
+                    notion_client,
+                    gemini_mode=gemini_mode,
+                )
+            )
 
         if recalled_text:
             transcript.append(
@@ -604,6 +660,7 @@ class ConversationManager:
                         "请基于以上历史回答用户的问题。"
                     ),
                     notion_client,
+                    gemini_mode=gemini_mode,
                 )
             )
             transcript.append(
@@ -611,10 +668,18 @@ class ConversationManager:
                     "assistant",
                     "我已查阅相关历史记录，将综合作答。",
                     notion_client,
+                    gemini_mode=gemini_mode,
                 )
             )
 
-        transcript.append(self._build_dialog_block("user", new_prompt, notion_client))
+        transcript.append(
+            self._build_dialog_block(
+                "user",
+                new_prompt,
+                notion_client,
+                gemini_mode=gemini_mode,
+            )
+        )
         return {
             "transcript": transcript,
             "memory_degraded": memory_degraded,

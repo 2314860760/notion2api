@@ -1,4 +1,5 @@
 import threading
+import time
 import uuid
 from typing import Any, Generator, Optional
 
@@ -66,18 +67,107 @@ class NotionOpusAPI:
             converted.append(notion_block)
         return converted
 
+    def _resolve_thread_type(self, notion_transcript: list[dict[str, Any]]) -> str:
+        for block in notion_transcript:
+            if block.get("type") != "config":
+                continue
+            value = block.get("value")
+            if isinstance(value, dict):
+                thread_type = str(value.get("type", "") or "").strip()
+                if thread_type:
+                    return thread_type
+        return "workflow"
+
+    def _resolve_request_profile(self, thread_type: str) -> dict[str, Any]:
+        is_markdown_chat = thread_type == "markdown-chat"
+        return {
+            "thread_type": thread_type,
+            "create_thread": not is_markdown_chat,
+            "is_partial_transcript": is_markdown_chat,
+            "precreate_thread": is_markdown_chat,
+            "include_debug_overrides": True,
+        }
+
+    def _build_thread_headers(self) -> dict[str, str]:
+        return {
+            "content-type": "application/json",
+            "cookie": f"token_v2={self.token_v2}",
+            "x-notion-active-user-header": self.user_id,
+            "x-notion-space-id": self.space_id,
+        }
+
+    def _create_thread(self, thread_id: str, thread_type: str) -> bool:
+        payload = {
+            "requestId": str(uuid.uuid4()),
+            "transactions": [
+                {
+                    "id": str(uuid.uuid4()),
+                    "spaceId": self.space_id,
+                    "operations": [
+                        {
+                            "pointer": {"table": "thread", "id": thread_id, "spaceId": self.space_id},
+                            "path": [],
+                            "command": "set",
+                            "args": {
+                                "id": thread_id,
+                                "version": 1,
+                                "parent_id": self.space_id,
+                                "parent_table": "space",
+                                "space_id": self.space_id,
+                                "created_time": int(time.time() * 1000),
+                                "created_by_id": self.user_id,
+                                "created_by_table": "notion_user",
+                                "messages": [],
+                                "data": {},
+                                "alive": True,
+                                "type": thread_type,
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        try:
+            resp = requests.post(
+                self.delete_url,
+                json=payload,
+                headers=self._build_thread_headers(),
+                timeout=20,
+            )
+            if resp.status_code == 200:
+                return True
+            logger.warning(
+                "Pre-create thread failed",
+                extra={
+                    "request_info": {
+                        "event": "thread_precreate_failed",
+                        "thread_id": thread_id,
+                        "thread_type": thread_type,
+                        "status": resp.status_code,
+                    }
+                },
+            )
+        except Exception:
+            logger.warning(
+                "Pre-create thread raised exception",
+                exc_info=True,
+                extra={
+                    "request_info": {
+                        "event": "thread_precreate_error",
+                        "thread_id": thread_id,
+                        "thread_type": thread_type,
+                    }
+                },
+            )
+        return False
+
     def delete_thread(self, thread_id: str) -> None:
         """
         通过 saveTransactions 接口将指定 thread 的 alive 状态设为 False，
         从而清理 Notion 主页面上的对话记录。
         此方法设计为在后台线程中调用，不影响主流输出。
         """
-        headers = {
-            "content-type": "application/json",
-            "cookie": f"token_v2={self.token_v2}",
-            "x-notion-active-user-header": self.user_id,
-            "x-notion-space-id": self.space_id,
-        }
+        headers = self._build_thread_headers()
         payload = {
             "requestId": str(uuid.uuid4()),
             "transactions": [
@@ -126,10 +216,17 @@ class NotionOpusAPI:
             raise ValueError("Invalid transcript payload: transcript must be a non-empty list.")
 
         notion_transcript = self._to_notion_transcript(transcript)
+        thread_type = self._resolve_thread_type(notion_transcript)
+        request_profile = self._resolve_request_profile(thread_type)
 
         thread_id = str(uuid.uuid4())
         trace_id = str(uuid.uuid4())
         response = None
+
+        if request_profile["precreate_thread"]:
+            if not self._create_thread(thread_id, thread_type):
+                request_profile["create_thread"] = True
+                request_profile["is_partial_transcript"] = False
 
         cookies = {
             "token_v2": self.token_v2,
@@ -152,12 +249,12 @@ class NotionOpusAPI:
             "traceId": trace_id,
             "spaceId": self.space_id,
             "threadId": thread_id,
-            "threadType": "workflow",
-            "createThread": True,
+            "threadType": thread_type,
+            "createThread": request_profile["create_thread"],
             "generateTitle": True,
             "saveAllThreadOperations": True,
             "setUnreadState": True,
-            "isPartialTranscript": False,
+            "isPartialTranscript": request_profile["is_partial_transcript"],
             "asPatchResponse": True,
             "isUserInAnySalesAssistedSpace": False,
             "isSpaceSalesAssisted": False,
@@ -166,14 +263,15 @@ class NotionOpusAPI:
                 "id": self.space_id,
                 "spaceId": self.space_id,
             },
-            "debugOverrides": {
+            "transcript": notion_transcript,
+        }
+        if request_profile["include_debug_overrides"]:
+            payload["debugOverrides"] = {
                 "emitAgentSearchExtractedResults": True,
                 "cachedInferences": {},
                 "annotationInferences": {},
                 "emitInferences": False,
-            },
-            "transcript": notion_transcript,
-        }
+            }
 
         logger.info(
             "Dispatching request to Notion upstream",
@@ -182,6 +280,9 @@ class NotionOpusAPI:
                     "event": "notion_upstream_request",
                     "trace_id": trace_id,
                     "thread_id": thread_id,
+                    "thread_type": thread_type,
+                    "create_thread": bool(request_profile["create_thread"]),
+                    "is_partial_transcript": bool(request_profile["is_partial_transcript"]),
                     "account": self.account_key,
                     "space_id": self.space_id,
                 }
