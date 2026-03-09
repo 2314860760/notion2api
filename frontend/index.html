@@ -6,26 +6,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Claude - Notion Opus Wrapper</title>
 
-    <!-- Tailwind CSS (CDN) -->
+    <!-- External Libraries -->
     <script src="https://cdn.tailwindcss.com"></script>
-
-    <!-- Marked.js (CDN) -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-
-    <!-- DOMPurify (CDN) -->
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
-
-    <!-- Highlight.js (CDN) for Markdown Code Blocks -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 
     <!-- Google Fonts: Lora -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&display=swap"
-        rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&display=swap" rel="stylesheet">
 
-    <!-- Tailwind Configuration & Custom Styles -->
+    <!-- Tailwind Configuration -->
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -47,7 +40,7 @@
                         darkUserMsg: '#383838',
 
                         // Action colors
-                        accent: '#da7756', // The orange-ish star color
+                        accent: '#da7756',
                         accentHover: '#c56546',
                     },
                     fontFamily: {
@@ -59,454 +52,12 @@
             }
         }
     </script>
-    <style>
-        /* Base global transitions */
-        body {
-            font-family: 'Lora', Georgia, serif;
-            transition: background-color 0.3s ease, color 0.3s ease;
-        }
 
-        /* Subtle Background Texture (Dark Mode) */
-        html.dark body {
-            background: radial-gradient(ellipse at 50% 30%, #222018 0%, #161614 60%, #111110 100%);
-            background-attachment: fixed;
-        }
-
-        /* Star Icon Breathing Animation */
-        @keyframes breathe {
-
-            0%,
-            100% {
-                opacity: 0.7;
-                transform: scale(1);
-            }
-
-            50% {
-                opacity: 1;
-                transform: scale(1.08);
-            }
-        }
-
-        .star-breathe {
-            animation: breathe 3s ease-in-out infinite;
-        }
-
-        /* AI Message Star Animations */
-        @keyframes starBreathe {
-
-            0%,
-            100% {
-                transform: scale(1);
-                opacity: 0.75;
-            }
-
-            50% {
-                transform: scale(1.18);
-                opacity: 1;
-            }
-        }
-
-        .star-generating {
-            animation: starBreathe 1.6s ease-in-out infinite;
-        }
-
-        @keyframes starClick {
-            0% {
-                transform: scale(1);
-            }
-
-            30% {
-                transform: scale(0.7);
-            }
-
-            100% {
-                transform: scale(1);
-            }
-        }
-
-        .message-star-container {
-            position: absolute;
-            bottom: -28px;
-            left: 0;
-            width: 28px;
-            height: 28px;
-            pointer-events: auto;
-        }
-
-        .message-star-container>svg {
-            width: 28px;
-            height: 28px;
-        }
-
-        .star-tooltip {
-            font-family: 'Lora', Georgia, serif;
-            font-style: italic;
-            font-size: 11px;
-            background: transparent;
-            pointer-events: none;
-            opacity: 0;
-            transition: opacity 0.2s ease;
-        }
-
-        html.dark .star-tooltip {
-            color: rgba(255, 255, 255, 0.5);
-        }
-
-        html:not(.dark) .star-tooltip {
-            color: rgba(0, 0, 0, 0.5);
-        }
-
-        .message-star-container:hover .star-tooltip {
-            opacity: 1;
-        }
-
-        /* Claude Style Custom Select */
-        #customModelDropdown {
-            pointer-events: none;
-            opacity: 0;
-            transform: translateY(10px);
-            transition: opacity 0.15s ease, transform 0.15s ease;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-            font-family: 'Lora', Georgia, serif;
-        }
-
-        #customModelDropdown.open {
-            pointer-events: auto;
-            opacity: 1;
-            transform: translateY(0);
-        }
-
-        /* 3-Dot Custom Dropdown */
-        .custom-dropdown {
-            display: none;
-            opacity: 0;
-            transform: scale(0.95);
-            transform-origin: top right;
-            transition: opacity 0.15s ease, transform 0.15s ease;
-        }
-
-        .custom-dropdown.open {
-            display: flex;
-            opacity: 1;
-            transform: scale(1);
-        }
-
-        /* Welcome Title Typography */
-        .welcome-title {
-            font-family: 'Lora', serif;
-            font-size: clamp(2rem, 3.8vw, 2.8rem);
-            letter-spacing: 0.01em;
-        }
-
-        /* Input Box Polish */
-        .chat-input-wrapper {
-            transition: box-shadow 0.2s ease, border-color 0.2s ease;
-            border: 1px solid rgba(196, 120, 80, 0.25) !important;
-        }
-
-        .chat-input-wrapper:focus-within {
-            box-shadow: 0 0 0 1.5px rgba(196, 120, 80, 0.4) !important;
-            border-color: rgba(196, 120, 80, 0.4) !important;
-        }
-
-        /* Custom placeholder color */
-        html.dark #chatInput::placeholder {
-            color: rgba(255, 255, 255, 0.3) !important;
-        }
-
-        html:not(.dark) #chatInput::placeholder {
-            color: rgba(0, 0, 0, 0.3) !important;
-        }
-
-        .memory-banner {
-            border-left: 3px solid #da7756;
-            background: #f2f0eb;
-            color: #2d2d2d;
-        }
-
-        html.dark .memory-banner {
-            background: #383838;
-            color: #e5e5e5;
-        }
-
-        .memory-banner-icon {
-            color: #da7756;
-        }
-
-        .memory-banner-close {
-            color: inherit;
-            opacity: 0.72;
-        }
-
-        .memory-banner-close:hover {
-            opacity: 1;
-        }
-
-        /* Hide scrollbars for cleaner look like native apps */
-        .no-scrollbar::-webkit-scrollbar {
-            display: none;
-        }
-
-        .no-scrollbar {
-            -ms-overflow-style: none;
-            /* IE and Edge */
-            scrollbar-width: none;
-            /* Firefox */
-        }
-
-        /* Markdown Content Styling */
-        .markdown-body {
-            font-size: 1rem;
-            line-height: 1.6;
-        }
-
-        .markdown-body p {
-            margin-bottom: 1em;
-        }
-
-        .markdown-body pre {
-            background-color: #1a1a1a !important;
-            border-radius: 0.5rem;
-            padding: 1rem;
-            overflow-x: auto;
-            margin: 1em 0;
-            position: relative;
-        }
-
-        /* Per-code-block copy button */
-        .code-copy-btn {
-            position: absolute;
-            top: 0.5rem;
-            right: 0.5rem;
-            padding: 0.25rem 0.5rem;
-            background: rgba(255, 255, 255, 0.07);
-            color: #aaa;
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 0.35rem;
-            font-size: 0.7rem;
-            cursor: pointer;
-            opacity: 0;
-            transition: opacity 0.2s;
-            font-family: inherit;
-        }
-
-        .markdown-body pre:hover .code-copy-btn {
-            opacity: 1;
-        }
-
-        .code-copy-btn:hover {
-            background: rgba(255, 255, 255, 0.14);
-            color: #fff;
-        }
-
-        .markdown-body code {
-            font-family: Consolas, Monaco, "Courier New", monospace;
-            font-size: 0.9em;
-        }
-
-        /* Inline code */
-        .markdown-body p code,
-        .markdown-body li code {
-            background-color: rgba(0, 0, 0, 0.05);
-            padding: 0.2em 0.4em;
-            border-radius: 0.25rem;
-            color: #d15050;
-        }
-
-        html.dark .markdown-body p code,
-        html.dark .markdown-body li code {
-            background-color: rgba(255, 255, 255, 0.1);
-            color: #ff8c8c;
-        }
-
-        .markdown-body ul {
-            list-style-type: disc;
-            padding-left: 2em;
-            margin-bottom: 1em;
-        }
-
-        .markdown-body ol {
-            list-style-type: decimal;
-            padding-left: 2em;
-            margin-bottom: 1em;
-        }
-
-        /* Search metadata block */
-        .search-sources,
-        .thinking-sources {
-            margin-bottom: 0.6rem;
-            padding: 0.45rem 0.6rem;
-            border: 1px solid rgba(0, 0, 0, 0.08);
-            border-radius: 0.6rem;
-            background: rgba(0, 0, 0, 0.03);
-            color: #666;
-            font-size: 0.75rem;
-            line-height: 1.4;
-        }
-
-        html.dark .search-sources,
-        html.dark .thinking-sources {
-            border-color: rgba(255, 255, 255, 0.12);
-            background: rgba(255, 255, 255, 0.06);
-            color: #bdbdbd;
-        }
-
-        .search-toggle,
-        .thinking-toggle {
-            width: 100%;
-            background: transparent;
-            border: 0;
-            color: inherit;
-            text-align: left;
-            font-size: inherit;
-            cursor: pointer;
-            padding: 0;
-        }
-
-        .search-details,
-        .thinking-details {
-            margin-top: 0.45rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.35rem;
-        }
-
-        .search-links {
-            display: flex;
-            flex-direction: column;
-            gap: 0.2rem;
-        }
-
-        .search-source-link {
-            color: inherit;
-            text-decoration: underline;
-            text-underline-offset: 2px;
-            opacity: 0.95;
-        }
-
-        .search-source-link:hover {
-            opacity: 0.75;
-        }
-
-        .search-empty {
-            opacity: 0.75;
-        }
-
-        .thinking-markdown {
-            font-size: inherit;
-            line-height: 1.45;
-        }
-
-        .thinking-markdown p {
-            margin-bottom: 0.55em;
-        }
-
-        .thinking-markdown pre {
-            margin: 0.45rem 0;
-        }
-
-        /* Thinking animation dots */
-        .typing-indicator span {
-            display: inline-block;
-            width: 6px;
-            height: 6px;
-            background-color: currentColor;
-            border-radius: 50%;
-            margin-right: 4px;
-            animation: typing 1.4s infinite ease-in-out both;
-        }
-
-        .typing-indicator span:nth-child(1) {
-            animation-delay: -0.32s;
-        }
-
-        .typing-indicator span:nth-child(2) {
-            animation-delay: -0.16s;
-        }
-
-        @keyframes typing {
-
-            0%,
-            80%,
-            100% {
-                transform: scale(0);
-                opacity: 0.4;
-            }
-
-            40% {
-                transform: scale(1);
-                opacity: 1;
-            }
-        }
-
-        /* Task 1: Initial State & Chat State Transitions */
-        #inputAreaWrapper {
-            transition: bottom 0.5s cubic-bezier(0.2, 0, 0, 1), transform 0.5s cubic-bezier(0.2, 0, 0, 1), background-color 0.3s ease;
-        }
-
-        .initial-state-container {
-            position: absolute !important;
-            top: 56px;
-            /* below header */
-            bottom: 0 !important;
-            left: 0;
-            right: 0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: flex-start !important;
-            /* Shift up to match user's red/blue box reference robustly */
-            padding-top: 20vh !important;
-            padding-bottom: 0 !important;
-            transform: none !important;
-        }
-
-        /* Dynamically narrow down the input box on initial state */
-        .initial-state-container .max-w-2xl {
-            max-width: 38rem !important;
-            /* between xl and 2xl */
-        }
-
-        .chat-state-container .max-w-2xl {
-            transition: max-width 0.4s ease;
-        }
-
-        /* Taller input box on initial state */
-        .initial-state-container #chatInput {
-            min-height: 80px !important;
-            padding-top: 1.5rem !important;
-            transition: min-height 0.4s ease, padding 0.4s ease;
-        }
-
-        .chat-state-container {
-            position: absolute !important;
-            bottom: 0px !important;
-            top: auto !important;
-            display: block;
-            transform: translateY(0);
-        }
-
-        #inputGradientMask,
-        #inputBgMask {
-            transition: opacity 0.5s ease;
-        }
-
-        #welcomeScreen {
-            transition: opacity 0.3s ease, height 0.3s ease, margin 0.3s ease, transform 0.3s ease;
-            transform: translateY(0);
-        }
-
-        #welcomeScreen.hidden {
-            display: flex !important;
-            opacity: 0 !important;
-            pointer-events: none;
-            height: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            overflow: hidden;
-            transform: translateY(-20px);
-        }
-    </style>
+    <!-- Modular CSS Files -->
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/animations.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/markdown.css">
 </head>
 
 <body class="bg-claudeBg text-claudeText dark:bg-darkBg dark:text-darkText h-screen flex overflow-hidden font-sans">
@@ -515,22 +66,16 @@
     <div id="mobileBackdrop" class="fixed inset-0 bg-black/50 z-20 hidden md:hidden transition-opacity"></div>
 
     <!-- LEFT SIDEBAR -->
-    <aside id="sidebar"
-        class="bg-claudeSidebar dark:bg-darkSidebar w-[260px] h-full flex flex-col border-r border-black/5 dark:border-white/5 absolute md:relative z-30 transition-transform duration-300 -translate-x-full md:translate-x-0">
-
+    <aside id="sidebar" class="bg-claudeSidebar dark:bg-darkSidebar w-[260px] h-full flex flex-col border-r border-black/5 dark:border-white/5 absolute md:relative z-30 transition-transform duration-300 -translate-x-full md:translate-x-0">
         <!-- Sidebar Header / Mobile Close -->
         <div class="p-4 flex items-center justify-between mt-2">
             <h1 class="text-xl font-serif font-medium flex items-center gap-2">
-                <!-- Claude star SVG -->
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="24" height="24"
-                    class="text-accent star-breathe" style="fill: currentColor;">
-                    <path
-                        d="m19.6 66.5 19.7-11 .3-1-.3-.5h-1l-3.3-.2-11.2-.3L14 53l-9.5-.5-2.4-.5L0 49l1.2-1.5 2-1.3 2.9.2 6.3.5 9.5.6 6.9.4L38 49.1h1.6l.2-.7-.5-.4-.4-.4L29 41l-10.6-7-5.6-4.1-3-2-1.5-2-.6-4.2 2.7-3 3.7.3.9.2 3.7 2.9 8 6.1L37 36l1.5 1.2.6-.4.1-.3-.7-1.1L33 25l-6-10.4-2.7-4.3-.7-2.6c-.3-1-.4-2-.4-3l3-4.2L28 0l4.2.6L33.8 2l2.6 6 4.1 9.3L47 29.9l2 3.8 1 3.4.3 1h.7v-.5l1.5-7.2 1-8.7 1-11.2.3-3.2 1.6-3.8 3-2L61 2.6l2 2.9-.3 1.8-1.1 7.7L59 27.1l-1.5 8.2h.9l1-1.1 4.1-5.4 6.9-8.6 3-3.5L77 13l2.3-1.8h4.3l3.1 4.7-1.4 4.9-4.4 5.6-3.7 4.7-5.3 7.1-3.2 5.7.3.4h.7l12-2.6 6.4-1.1 7.6-1.3 3.5 1.6.4 1.6-1.4 3.4-8.2 2-9.6 2-14.3 3.3-.2.1.2.3 6.4.6 2.8.2h6.8l12.6 1 3.3 2 1.9 2.7-.3 2-5.1 2.6-6.8-1.6-16-3.8-5.4-1.3h-.8v.4l4.6 4.5 8.3 7.5L89 80.1l1.5 2.4-1.3 2-1.4-.2-9.2-7-3.6-3-8-6.8h-.5v.7l1.8 2.7 9.8 14.7.5 4.5-.7 1.4-2.6 1-2.7-.6-5.8-8-6-9.4-7-8.2-.5.4-2.9 30.2-1.3 1.5-3 1.2-2.5-2-1.4-3 1.4-6.2 1.6-8 1.3-6.4 1.2-7.9.7-2.6v-.2H49L43 72l-9 12.3-7.2 7.6-1.7.7-3-1.5.3-2.8L24 86l10-12.8 6-7.9 4-4.6-.1-.5h-.3L17.2 77.4l-4.7.6-2.2.2-3 1-1 8-5.5Z" />
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="24" height="24" class="text-accent star-breathe" style="fill: currentColor;">
+                    <path d="m19.6 66.5 19.7-11 .3-1-.3-.5h-1l-3.3-.2-11.2-.3L14 53l-9.5-.5-2.4-.5L0 49l1.2-1.5 2-1.3 2.9.2 6.3.5 9.5.6 6.9.4L38 49.1h1.6l.2-.7-.5-.4-.4-.4L29 41l-10.6-7-5.6-4.1-3-2-1.5-2-.6-4.2 2.7-3 3.7.3.9.2 3.7 2.9 8 6.1L37 36l1.5 1.2.6-.4.1-.3-.7-1.1L33 25l-6-10.4-2.7-4.3-.7-2.6c-.3-1-.4-2-.4-3l3-4.2L28 0l4.2.6L33.8 2l2.6 6 4.1 9.3L47 29.9l2 3.8 1 3.4.3 1h.7v-.5l1.5-7.2 1-8.7 1-11.2.3-3.2 1.6-3.8 3-2L61 2.6l2 2.9-.3 1.8-1.1 7.7L59 27.1l-1.5 8.2h.9l1-1.1 4.1-5.4 6.9-8.6 3-3.5L77 13l2.3-1.8h4.3l3.1 4.7-1.4 4.9-4.4 5.6-3.7 4.7-5.3 7.1-3.2 5.7.3.4h.7l12-2.6 6.4-1.1 7.6-1.3 3.5 1.6.4 1.6-1.4 3.4-8.2 2-9.6 2-14.3 3.3-.2.1.2.3 6.4.6 2.8.2h6.8l12.6 1 3.3 2 1.9 2.7-.3 2-5.1 2.6-6.8-1.6-16-3.8-5.4-1.3h-.8v.4l4.6 4.5 8.3 7.5L89 80.1l1.5 2.4-1.3 2-1.4-.2-9.2-7-3.6-3-8-6.8h-.5v.7l1.8 2.7 9.8 14.7.5 4.5-.7 1.4-2.6 1-2.7-.6-5.8-8-6-9.4-7-8.2-.5.4-2.9 30.2-1.3 1.5-3 1.2-2.5-2-1.4-3 1.4-6.2 1.6-8 1.3-6.4 1.2-7.9.7-2.6v-.2H49L43 72l-9 12.3-7.2 7.6-1.7.7-3-1.5.3-2.8L24 86l10-12.8 6-7.9 4-4.6-.1-.5h-.3L17.2 77.4l-4.7.6-2.2.2-3 1-1 8-5.5Z" />
                 </svg>
                 Claude
             </h1>
-            <button id="closeSidebarBtn"
-                class="md:hidden p-2 text-gray-500 hover:text-black dark:item-gray-400 dark:hover:text-white rounded-md">
+            <button id="closeSidebarBtn" class="md:hidden p-2 text-gray-500 hover:text-black dark:item-gray-400 dark:hover:text-white rounded-md">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M18 6L6 18M6 6l12 12"></path>
                 </svg>
@@ -539,10 +84,8 @@
 
         <!-- New Chat Button -->
         <div class="px-3 pb-4">
-            <button id="newChatBtn"
-                class="w-full flex items-center gap-2 p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition-colors text-sm font-medium">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                    stroke-linecap="round" stroke-linejoin="round">
+            <button id="newChatBtn" class="w-full flex items-center gap-2 p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition-colors text-sm font-medium">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="12" y1="5" x2="12" y2="19"></line>
                     <line x1="5" y1="12" x2="19" y2="12"></line>
                 </svg>
@@ -557,13 +100,10 @@
 
         <!-- Sidebar Footer Action (Settings only) -->
         <div class="p-4 border-t border-black/5 dark:border-white/5 flex flex-col gap-3">
-            <button id="settingsBtn"
-                class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 hover:text-black dark:hover:text-white py-1.5 px-1 rounded-md hover:bg-black/5 dark:hover:bg-white/5 transition-colors">
+            <button id="settingsBtn" class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 hover:text-black dark:hover:text-white py-1.5 px-1 rounded-md hover:bg-black/5 dark:hover:bg-white/5 transition-colors">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="12" cy="12" r="3"></circle>
-                    <path
-                        d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
-                    </path>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
                 </svg>
                 API Settings
             </button>
@@ -573,109 +113,79 @@
     <!-- MAIN CHAT AREA -->
     <main class="flex-1 flex flex-col relative w-full">
         <!-- Main Area Header -->
-        <header
-            class="h-14 flex items-center justify-between px-4 sticky top-0 bg-claudeBg/80 dark:bg-darkBg/80 backdrop-blur-md z-10">
+        <header class="h-14 flex items-center justify-between px-4 sticky top-0 bg-claudeBg/80 dark:bg-darkBg/80 backdrop-blur-md z-10">
             <div class="flex items-center gap-3">
-                <button id="openSidebarBtn"
-                    class="md:hidden p-2 -ml-2 text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white rounded-md">
+                <button id="openSidebarBtn" class="md:hidden p-2 -ml-2 text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white rounded-md">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <line x1="3" y1="12" x2="21" y2="12"></line>
                         <line x1="3" y1="6" x2="21" y2="6"></line>
                         <line x1="3" y1="18" x2="21" y2="18"></line>
                     </svg>
                 </button>
-                <!-- Title Display -->
-                <div id="headerTitle"
-                    class="font-medium text-[15px] truncate max-w-[200px] sm:max-w-xs md:max-w-md hidden md:block opacity-0 transition-opacity">
-                    New chat
-                </div>
+                <div id="headerTitle" class="font-medium text-[15px] truncate max-w-[200px] sm:max-w-xs md:max-w-md hidden md:block opacity-0 transition-opacity">New chat</div>
             </div>
 
-            <button id="themeToggleBtn"
-                class="p-2 text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors">
-                <!-- Sun Icon (shown in dark mode) -->
+            <button id="themeToggleBtn" class="p-2 text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors">
                 <svg id="sunIcon" class="hidden w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z">
-                    </path>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path>
                 </svg>
-                <!-- Moon Icon (shown in light mode) -->
                 <svg id="moonIcon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z">
-                    </path>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path>
                 </svg>
             </button>
         </header>
 
-        <!-- Memory Banner and Chat Area follow immediately -->
+        <!-- Memory Banner -->
         <div id="memoryBanner" class="hidden px-4 sm:px-6 pt-2 relative z-20">
             <div class="memory-banner max-w-2xl mx-auto rounded-xl px-4 py-3 text-sm flex items-start gap-3">
                 <span class="memory-banner-icon text-base leading-5">⚠️</span>
-                <div class="flex-1 leading-6">
-                    当前上下文记忆功能受限，部分历史可能无法被感知，如问题持续请联系管理员。
-                </div>
+                <div class="flex-1 leading-6">当前上下文记忆功能受限，部分历史可能无法被感知，如问题持续请联系管理员。</div>
                 <button id="memoryBannerClose" type="button" class="memory-banner-close text-lg leading-5">✕</button>
             </div>
         </div>
 
         <!-- Chat Stream Render Area -->
-        <div id="chatContainer"
-            class="flex-1 overflow-y-auto w-full max-w-2xl mx-auto px-4 sm:px-6 pb-36 pt-4 flex flex-col gap-6 relative z-10 scroll-smooth">
+        <div id="chatContainer" class="flex-1 overflow-y-auto w-full max-w-2xl mx-auto px-4 sm:px-6 pb-36 pt-4 flex flex-col gap-6 relative z-10 scroll-smooth">
             <!-- Messages inserted here dynamically -->
         </div>
 
         <!-- Sticky Input Area -->
-        <div id="inputAreaWrapper"
-            class="absolute left-0 right-0 p-4 sm:px-6 z-20 pointer-events-none chat-state-container">
-            <!-- Gradient fading helper mask -->
-            <div id="inputGradientMask"
-                class="absolute inset-x-0 -top-10 h-10 bg-gradient-to-t from-claudeBg dark:from-darkBg to-transparent z-[-1]">
-            </div>
+        <div id="inputAreaWrapper" class="absolute left-0 right-0 p-4 sm:px-6 z-20 pointer-events-none chat-state-container">
+            <div id="inputGradientMask" class="absolute inset-x-0 -top-10 h-10 bg-gradient-to-t from-claudeBg dark:from-darkBg to-transparent z-[-1]"></div>
             <div id="inputBgMask" class="absolute inset-0 bg-claudeBg dark:bg-darkBg z-[-1]"></div>
 
             <div class="max-w-2xl w-full mx-auto pointer-events-none flex flex-col items-center">
-                <!-- Initial Welcome Page (Moved here) -->
-                <div id="welcomeScreen"
-                    class="flex flex-col items-center justify-center pb-8 transition-all duration-300 w-full">
-                    <h2
-                        class="text-center text-claudeText dark:text-darkText w-full leading-tight flex flex-row items-center justify-center gap-4 welcome-title">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="42" height="42"
-                            class="text-accent star-breathe" style="fill: currentColor;">
-                            <path
-                                d="m19.6 66.5 19.7-11 .3-1-.3-.5h-1l-3.3-.2-11.2-.3L14 53l-9.5-.5-2.4-.5L0 49l1.2-1.5 2-1.3 2.9.2 6.3.5 9.5.6 6.9.4L38 49.1h1.6l.2-.7-.5-.4-.4-.4L29 41l-10.6-7-5.6-4.1-3-2-1.5-2-.6-4.2 2.7-3 3.7.3.9.2 3.7 2.9 8 6.1L37 36l1.5 1.2.6-.4.1-.3-.7-1.1L33 25l-6-10.4-2.7-4.3-.7-2.6c-.3-1-.4-2-.4-3l3-4.2L28 0l4.2.6L33.8 2l2.6 6 4.1 9.3L47 29.9l2 3.8 1 3.4.3 1h.7v-.5l1.5-7.2 1-8.7 1-11.2.3-3.2 1.6-3.8 3-2L61 2.6l2 2.9-.3 1.8-1.1 7.7L59 27.1l-1.5 8.2h.9l1-1.1 4.1-5.4 6.9-8.6 3-3.5L77 13l2.3-1.8h4.3l3.1 4.7-1.4 4.9-4.4 5.6-3.7 4.7-5.3 7.1-3.2 5.7.3.4h.7l12-2.6 6.4-1.1 7.6-1.3 3.5 1.6.4 1.6-1.4 3.4-8.2 2-9.6 2-14.3 3.3-.2.1.2.3 6.4.6 2.8.2h6.8l12.6 1 3.3 2 1.9 2.7-.3 2-5.1 2.6-6.8-1.6-16-3.8-5.4-1.3h-.8v.4l4.6 4.5 8.3 7.5L89 80.1l1.5 2.4-1.3 2-1.4-.2-9.2-7-3.6-3-8-6.8h-.5v.7l1.8 2.7 9.8 14.7.5 4.5-.7 1.4-2.6 1-2.7-.6-5.8-8-6-9.4-7-8.2-.5.4-2.9 30.2-1.3 1.5-3 1.2-2.5-2-1.4-3 1.4-6.2 1.6-8 1.3-6.4 1.2-7.9.7-2.6v-.2H49L43 72l-9 12.3-7.2 7.6-1.7.7-3-1.5.3-2.8L24 86l10-12.8 6-7.9 4-4.6-.1-.5h-.3L17.2 77.4l-4.7.6-2.2.2-3 1-1 8-5.5Z" />
+                <!-- Initial Welcome Page -->
+                <div id="welcomeScreen" class="flex flex-col items-center justify-center pb-8 transition-all duration-300 w-full">
+                    <h2 class="text-center text-claudeText dark:text-darkText w-full leading-tight flex flex-row items-center justify-center gap-4 welcome-title">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="42" height="42" class="text-accent star-breathe" style="fill: currentColor;">
+                            <path d="m19.6 66.5 19.7-11 .3-1-.3-.5h-1l-3.3-.2-11.2-.3L14 53l-9.5-.5-2.4-.5L0 49l1.2-1.5 2-1.3 2.9.2 6.3.5 9.5.6 6.9.4L38 49.1h1.6l.2-.7-.5-.4-.4-.4L29 41l-10.6-7-5.6-4.1-3-2-1.5-2-.6-4.2 2.7-3 3.7.3.9.2 3.7 2.9 8 6.1L37 36l1.5 1.2.6-.4.1-.3-.7-1.1L33 25l-6-10.4-2.7-4.3-.7-2.6c-.3-1-.4-2-.4-3l3-4.2L28 0l4.2.6L33.8 2l2.6 6 4.1 9.3L47 29.9l2 3.8 1 3.4.3 1h.7v-.5l1.5-7.2 1-8.7 1-11.2.3-3.2 1.6-3.8 3-2L61 2.6l2 2.9-.3 1.8-1.1 7.7L59 27.1l-1.5 8.2h.9l1-1.1 4.1-5.4 6.9-8.6 3-3.5L77 13l2.3-1.8h4.3l3.1 4.7-1.4 4.9-4.4 5.6-3.7 4.7-5.3 7.1-3.2 5.7.3.4h.7l12-2.6 6.4-1.1 7.6-1.3 3.5 1.6.4 1.6-1.4 3.4-8.2 2-9.6 2-14.3 3.3-.2.1.2.3 6.4.6 2.8.2h6.8l12.6 1 3.3 2 1.9 2.7-.3 2-5.1 2.6-6.8-1.6-16-3.8-5.4-1.3h-.8v.4l4.6 4.5 8.3 7.5L89 80.1l1.5 2.4-1.3 2-1.4-.2-9.2-7-3.6-3-8-6.8h-.5v.7l1.8 2.7 9.8 14.7.5 4.5-.7 1.4-2.6 1-2.7-.6-5.8-8-6-9.4-7-8.2-.5.4-2.9 30.2-1.3 1.5-3 1.2-2.5-2-1.4-3 1.4-6.2 1.6-8 1.3-6.4 1.2-7.9.7-2.6v-.2H49L43 72l-9 12.3-7.2 7.6-1.7.7-3-1.5.3-2.8L24 86l10-12.8 6-7.9 4-4.6-.1-.5h-.3L17.2 77.4l-4.7.6-2.2.2-3 1-1 8-5.5Z" />
                         </svg>
                         <span id="welcomeGreeting">Golden hour thinking</span>
                     </h2>
                 </div>
-                <div
-                    class="relative bg-white dark:bg-darkInput w-full shadow-[0_0_15px_rgba(0,0,0,0.05)] dark:shadow-none rounded-2xl chat-input-wrapper flex flex-col pointer-events-auto">
-                    <div class="relative w-full">
-                        <textarea id="chatInput" rows="1" placeholder="Reply..."
-                            class="w-full bg-transparent resize-none outline-none max-h-40 min-h-[56px] py-4 pl-4 pr-[50px] text-[15px] placeholder:text-gray-400 dark:placeholder:text-gray-500 overflow-y-auto disabled:opacity-50"
-                            style="height: 56px;"></textarea>
 
-                        <button id="sendBtn" title="Send (Enter)"
-                            class="absolute right-3 bottom-[14px] bg-accent/10 text-accent hover:bg-accent hover:text-white p-1.5 rounded-lg transition-colors disabled:opacity-40 disabled:hover:bg-accent/10 disabled:hover:text-accent disabled:cursor-not-allowed">
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <div class="relative bg-white dark:bg-darkInput w-full shadow-[0_0_15px_rgba(0,0,0,0.05)] dark:shadow-none rounded-2xl chat-input-wrapper flex flex-col pointer-events-auto">
+                    <div class="relative w-full">
+                        <textarea id="chatInput" rows="1" placeholder="Reply..." class="w-full bg-transparent resize-none outline-none max-h-40 min-h-[56px] py-4 pl-4 pr-[50px] text-[15px] placeholder:text-gray-400 dark:placeholder:text-gray-500 overflow-y-auto disabled:opacity-50" style="height: 56px;"></textarea>
+
+                        <button id="sendBtn" title="Send (Enter)" class="absolute right-3 bottom-[14px] bg-accent/10 text-accent hover:bg-accent hover:text-white p-1.5 rounded-lg transition-colors disabled:opacity-40 disabled:hover:bg-accent/10 disabled:hover:text-accent disabled:cursor-not-allowed">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <line x1="22" y1="2" x2="11" y2="13"></line>
                                 <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
                             </svg>
                         </button>
                     </div>
+
                     <div class="flex justify-between items-center px-3 pb-3">
                         <div></div>
-                        <!-- Custom Claude Model Dropdown -->
                         <div class="relative">
-                            <button id="modelTriggerBtn" type="button"
-                                class="flex items-center gap-1.5 text-[13px] border border-black/10 dark:border-white/10 dark:bg-white/5 dark:text-white/75 bg-black/5 text-black/75 px-2.5 py-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 transition-colors">
+                            <button id="modelTriggerBtn" type="button" class="flex items-center gap-1.5 text-[13px] border border-black/10 dark:border-white/10 dark:bg-white/5 dark:text-white/75 bg-black/5 text-black/75 px-2.5 py-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 transition-colors">
                                 <span id="modelTriggerText">Claude Sonnet 4.6</span>
                                 <span class="text-[10px] mt-0.5">∨</span>
                             </button>
 
-                            <div id="customModelDropdown"
-                                class="absolute bottom-full right-0 mb-2 w-[180px] bg-white dark:bg-[#2a2825] border border-black/10 dark:border-white/10 rounded-xl p-1.5 z-50 overflow-hidden flex flex-col shadow-lg">
+                            <div id="customModelDropdown" class="absolute bottom-full right-0 mb-2 w-[180px] bg-white dark:bg-[#2a2825] border border-black/10 dark:border-white/10 rounded-xl p-1.5 z-50 overflow-hidden flex flex-col shadow-lg">
                                 <div id="simpleModelList" class="flex flex-col w-full gap-0.5">
                                     <!-- Dynamic options injected here -->
                                 </div>
@@ -683,6 +193,7 @@
                         </div>
                     </div>
                 </div>
+
                 <div class="text-center mt-2 text-xs text-gray-400 dark:text-gray-500">
                     Shift + Enter for new line. Powered by local Notion API.
                 </div>
@@ -691,1258 +202,74 @@
     </main>
 
     <!-- SETTINGS MODAL -->
-    <div id="settingsModal"
-        class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 opacity-0 pointer-events-none transition-opacity duration-200">
-        <div class="bg-white dark:bg-[#2a2a2a] w-full max-w-md rounded-xl shadow-2xl overflow-hidden transform scale-95 transition-transform duration-200"
-            id="settingsModalContent">
+    <div id="settingsModal" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 opacity-0 pointer-events-none transition-opacity duration-200">
+        <div class="bg-white dark:bg-[#2a2a2a] w-full max-w-md rounded-xl shadow-2xl overflow-hidden transform scale-95 transition-transform duration-200" id="settingsModalContent">
             <div class="p-6">
                 <h3 class="text-xl font-serif font-medium mb-4">API Settings</h3>
 
                 <div class="space-y-4">
                     <div>
                         <label class="block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300">Base URL</label>
-                        <input type="text" id="baseUrlInput"
-                            class="w-full bg-gray-50 dark:bg-[#1f1f1f] border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-accent/50 outline-none transition-shadow"
-                            placeholder="http://localhost:8000">
+                        <input type="text" id="baseUrlInput" class="w-full bg-gray-50 dark:bg-[#1f1f1f] border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-accent/50 outline-none transition-shadow" placeholder="http://localhost:8000">
                     </div>
 
                     <div>
                         <label class="block text-sm font-medium mb-1 text-gray-700 dark:text-gray-300">API Key</label>
-                        <input type="password" id="apiKeyInput"
-                            class="w-full bg-gray-50 dark:bg-[#1f1f1f] border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-accent/50 outline-none transition-shadow"
-                            placeholder="Optional if not set on server">
+                        <input type="password" id="apiKeyInput" class="w-full bg-gray-50 dark:bg-[#1f1f1f] border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-accent/50 outline-none transition-shadow" placeholder="Optional if not set on server">
                     </div>
                 </div>
 
                 <div class="mt-8 flex justify-end gap-3">
-                    <button id="cancelSettingsBtn"
-                        class="px-4 py-2 rounded-lg text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-black/5 dark:hover:bg-white/5 transition-colors">Cancel</button>
-                    <button id="saveSettingsBtn"
-                        class="px-4 py-2 rounded-lg text-sm font-medium bg-black text-white dark:bg-white dark:text-black hover:opacity-90 transition-opacity">Save
-                        changes</button>
+                    <button id="cancelSettingsBtn" class="px-4 py-2 rounded-lg text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-black/5 dark:hover:bg-white/5 transition-colors">Cancel</button>
+                    <button id="saveSettingsBtn" class="px-4 py-2 rounded-lg text-sm font-medium bg-black text-white dark:bg-white dark:text-black hover:opacity-90 transition-opacity">Save changes</button>
                 </div>
             </div>
         </div>
     </div>
 
     <!-- RENAME MODAL -->
-    <div id="renameModal"
-        class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 opacity-0 pointer-events-none transition-opacity duration-200">
-        <div class="bg-white dark:bg-[#2a2a2a] w-full max-w-sm rounded-xl shadow-2xl overflow-hidden transform scale-95 transition-transform duration-200"
-            id="renameModalContent">
+    <div id="renameModal" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 opacity-0 pointer-events-none transition-opacity duration-200">
+        <div class="bg-white dark:bg-[#2a2a2a] w-full max-w-sm rounded-xl shadow-2xl overflow-hidden transform scale-95 transition-transform duration-200" id="renameModalContent">
             <div class="p-5">
                 <h3 class="text-lg font-serif font-medium mb-3">Rename chat</h3>
-                <input type="text" id="renameModalInput"
-                    class="w-full bg-transparent border border-black/10 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:border-black/30 dark:focus:border-white/30 outline-none transition-colors"
-                    placeholder="Enter chat title">
+                <input type="text" id="renameModalInput" class="w-full bg-transparent border border-black/10 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:border-black/30 dark:focus:border-white/30 outline-none transition-colors" placeholder="Enter chat title">
                 <div class="mt-5 flex justify-end gap-2">
-                    <button id="cancelRenameBtn"
-                        class="px-4 py-1.5 rounded-lg text-sm font-medium border border-gray-200 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 transition-colors">Cancel</button>
-                    <button id="saveRenameBtn"
-                        class="px-4 py-1.5 rounded-lg text-sm font-medium bg-black text-white dark:bg-white dark:text-black hover:opacity-90 transition-opacity">Save</button>
+                    <button id="cancelRenameBtn" class="px-4 py-1.5 rounded-lg text-sm font-medium border border-gray-200 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/5 transition-colors">Cancel</button>
+                    <button id="saveRenameBtn" class="px-4 py-1.5 rounded-lg text-sm font-medium bg-black text-white dark:bg-white dark:text-black hover:opacity-90 transition-opacity">Save</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Application Logic -->
-    <script>
-        // --- 1. State Management ---
-        const API_KEY_STORAGE_KEY = 'claude_api_key';
-
-        function loadStoredApiKey() {
-            const apiKey = localStorage.getItem(API_KEY_STORAGE_KEY) || sessionStorage.getItem(API_KEY_STORAGE_KEY) || '';
-            return apiKey;
-        }
-
-        function persistApiKey(apiKey) {
-            if (apiKey) {
-                localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
-                sessionStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
-            } else {
-                localStorage.removeItem(API_KEY_STORAGE_KEY);
-                sessionStorage.removeItem(API_KEY_STORAGE_KEY);
-            }
-        }
-
-        function renderMarkdownToSafeHtml(markdown) {
-            const renderedHtml = marked.parse(markdown || '');
-            return DOMPurify.sanitize(renderedHtml, {
-                USE_PROFILES: { html: true },
-                ADD_ATTR: ['target', 'rel']
-            });
-        }
-
-        function setSafeMarkdown(container, markdown) {
-            container.innerHTML = renderMarkdownToSafeHtml(markdown);
-        }
-
-        const STATE = {
-            baseUrl: localStorage.getItem('claude_base_url') || window.location.origin,
-            apiKey: loadStoredApiKey(),
-            theme: localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
-            chats: JSON.parse(localStorage.getItem('claude_chats')) || [], // [{id, title, messages: [{role, content}]}]
-            currentChatId: null,
-            isGenerating: false,
-            controller: null, // For aborting fetch
-            modelDisplayNames: {}
-        };
-        let memoryDegradedNotified = false;
-
-        // DOM Elements
-        const DOM = {
-            html: document.documentElement,
-            themeToggleBtn: document.getElementById('themeToggleBtn'),
-            sunIcon: document.getElementById('sunIcon'),
-            moonIcon: document.getElementById('moonIcon'),
-
-            sidebar: document.getElementById('sidebar'),
-            mobileBackdrop: document.getElementById('mobileBackdrop'),
-            openSidebarBtn: document.getElementById('openSidebarBtn'),
-            closeSidebarBtn: document.getElementById('closeSidebarBtn'),
-
-            newChatBtn: document.getElementById('newChatBtn'),
-            chatList: document.getElementById('chatList'),
-
-            chatContainer: document.getElementById('chatContainer'),
-            memoryBanner: document.getElementById('memoryBanner'),
-            memoryBannerClose: document.getElementById('memoryBannerClose'),
-            welcomeScreen: document.getElementById('welcomeScreen'),
-            inputAreaWrapper: document.getElementById('inputAreaWrapper'),
-            inputBgMask: document.getElementById('inputBgMask'),
-            inputGradientMask: document.getElementById('inputGradientMask'),
-            chatInput: document.getElementById('chatInput'),
-            sendBtn: document.getElementById('sendBtn'),
-            headerTitle: document.getElementById('headerTitle'),
-
-            settingsBtn: document.getElementById('settingsBtn'),
-            settingsModal: document.getElementById('settingsModal'),
-            settingsModalContent: document.getElementById('settingsModalContent'),
-            baseUrlInput: document.getElementById('baseUrlInput'),
-            apiKeyInput: document.getElementById('apiKeyInput'),
-            saveSettingsBtn: document.getElementById('saveSettingsBtn'),
-            cancelSettingsBtn: document.getElementById('cancelSettingsBtn'),
-
-            // Rename logic
-            renameModal: document.getElementById('renameModal'),
-            renameModalContent: document.getElementById('renameModalContent'),
-            renameModalInput: document.getElementById('renameModalInput'),
-            saveRenameBtn: document.getElementById('saveRenameBtn'),
-            cancelRenameBtn: document.getElementById('cancelRenameBtn'),
-
-            modelTriggerBtn: document.getElementById('modelTriggerBtn'),
-            customModelDropdown: document.getElementById('customModelDropdown'),
-            simpleModelList: document.getElementById('simpleModelList'),
-            modelTriggerText: document.getElementById('modelTriggerText')
-        };
-
-        const LOCAL_MODELS = [
-            { id: "claude-sonnet4.6", label: "Claude Sonnet 4.6" },
-            { id: "claude-opus4.6", label: "Claude Opus 4.6" },
-            { id: "gemini-3.1pro", label: "Gemini 3.1 Pro" },
-            { id: "gpt-5.2", label: "GPT-5.2" },
-            { id: "gpt-5.4", label: "GPT-5.4" },
-        ];
-        let currentSelectedModel = "claude-sonnet4.6";
-        let currentSelectedModelLabel = "Claude Sonnet 4.6";
-
-        // --- 2. Initialization ---
-        function init() {
-            STATE.chats = sanitizeChats(STATE.chats);
-            saveChats();
-            applyTheme(STATE.theme);
-            loadModels();
-            renderChatList();
-            updateWelcomeGreeting();
-
-            // Event Listeners
-            DOM.themeToggleBtn.addEventListener('click', toggleTheme);
-            DOM.newChatBtn.addEventListener('click', startNewChat);
-
-            // Sidebar Mobile Toggle
-            DOM.openSidebarBtn.addEventListener('click', () => toggleSidebar(true));
-            DOM.closeSidebarBtn.addEventListener('click', () => toggleSidebar(false));
-            DOM.mobileBackdrop.addEventListener('click', () => toggleSidebar(false));
-
-            // Input interactions
-            DOM.chatInput.addEventListener('input', autoResizeInput);
-            DOM.chatInput.addEventListener('keydown', handleInputKeydown);
-            DOM.sendBtn.addEventListener('click', handleSend);
-            DOM.memoryBannerClose.addEventListener('click', () => {
-                DOM.memoryBanner.classList.add('hidden');
-            });
-
-            // Settings interactions
-            DOM.settingsBtn.addEventListener('click', openSettings);
-            DOM.cancelSettingsBtn.addEventListener('click', closeSettings);
-            DOM.saveSettingsBtn.addEventListener('click', saveSettings);
-
-            // Rename interactions
-            DOM.cancelRenameBtn.addEventListener('click', () => {
-                DOM.renameModal.classList.add('opacity-0', 'pointer-events-none');
-                DOM.renameModalContent.classList.add('scale-95');
-                STATE.chatToRename = null;
-            });
-
-            DOM.saveRenameBtn.addEventListener('click', () => {
-                if (!STATE.chatToRename) return;
-                const newTitle = DOM.renameModalInput.value.trim();
-                if (newTitle) {
-                    const chat = STATE.chats.find(c => c.id === STATE.chatToRename);
-                    if (chat) {
-                        chat.title = newTitle;
-                        saveChats();
-                        renderChatList();
-                        if (STATE.currentChatId === chat.id) {
-                            DOM.headerTitle.textContent = chat.title;
-                        }
-                    }
-                }
-                DOM.renameModal.classList.add('opacity-0', 'pointer-events-none');
-                DOM.renameModalContent.classList.add('scale-95');
-                STATE.chatToRename = null;
-            });
-
-            DOM.renameModalInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') DOM.saveRenameBtn.click();
-                if (e.key === 'Escape') DOM.cancelRenameBtn.click();
-            });
-
-            // Custom Dropdown Interactions
-            DOM.modelTriggerBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                toggleDropdown();
-            });
-
-            document.addEventListener('click', (e) => {
-                if (!DOM.customModelDropdown.contains(e.target) && e.target !== DOM.modelTriggerBtn) {
-                    DOM.customModelDropdown.classList.remove('open');
-                }
-            });
-
-            populateModels();
-
-            // New chat on load if nothing selected
-            if (!STATE.currentChatId) {
-                startNewChat();
-            }
-        }
-
-        // --- 3. UI Interactions ---
-        function toggleTheme() {
-            STATE.theme = STATE.theme === 'dark' ? 'light' : 'dark';
-            localStorage.setItem('theme', STATE.theme);
-            applyTheme(STATE.theme);
-        }
-
-        function applyTheme(theme) {
-            if (theme === 'dark') {
-                DOM.html.classList.add('dark');
-                DOM.sunIcon.classList.remove('hidden');
-                DOM.moonIcon.classList.add('hidden');
-            } else {
-                DOM.html.classList.remove('dark');
-                DOM.sunIcon.classList.add('hidden');
-                DOM.moonIcon.classList.remove('hidden');
-            }
-        }
-
-        function toggleSidebar(show) {
-            if (show) {
-                DOM.sidebar.classList.remove('-translate-x-full');
-                DOM.mobileBackdrop.classList.remove('hidden');
-                setTimeout(() => DOM.mobileBackdrop.classList.add('opacity-100'), 10);
-            } else {
-                DOM.sidebar.classList.add('-translate-x-full');
-                DOM.mobileBackdrop.classList.remove('opacity-100');
-                setTimeout(() => DOM.mobileBackdrop.classList.add('hidden'), 300);
-            }
-        }
-
-        function notifyMemoryDegradedOnce() {
-            if (memoryDegradedNotified) return;
-            memoryDegradedNotified = true;
-            DOM.memoryBanner.classList.remove('hidden');
-        }
-
-        function autoResizeInput() {
-            const el = DOM.chatInput;
-            el.style.height = '56px'; // Reset
-            const scrollHeight = el.scrollHeight;
-            // Max height approx 6 lines (144px)
-            el.style.height = Math.min(scrollHeight, 144) + 'px';
-        }
-
-        function handleInputKeydown(e) {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-            }
-        }
-
-        // --- 4. Settings Management ---
-        function openSettings() {
-            DOM.baseUrlInput.value = STATE.baseUrl;
-            DOM.apiKeyInput.value = STATE.apiKey;
-
-            DOM.settingsModal.classList.remove('pointer-events-none');
-            DOM.settingsModal.classList.add('opacity-100');
-            DOM.settingsModalContent.classList.remove('scale-95');
-            DOM.settingsModalContent.classList.add('scale-100');
-        }
-
-        function closeSettings() {
-            DOM.settingsModal.classList.remove('opacity-100');
-            DOM.settingsModalContent.classList.remove('scale-100');
-            DOM.settingsModalContent.classList.add('scale-95');
-            setTimeout(() => {
-                DOM.settingsModal.classList.add('pointer-events-none');
-            }, 200);
-        }
-
-        function saveSettings() {
-            STATE.baseUrl = DOM.baseUrlInput.value.trim().replace(/\/$/, "");
-            STATE.apiKey = DOM.apiKeyInput.value.trim();
-            localStorage.setItem('claude_base_url', STATE.baseUrl);
-            persistApiKey(STATE.apiKey);
-            closeSettings();
-            loadModels(); // Refresh models with new config
-        }
-
-        // --- 5. Data Fetching & Model ---
-        function toggleDropdown() {
-            DOM.customModelDropdown.classList.toggle('open');
-        }
-
-        function handleModelSelect(id, label) {
-            currentSelectedModel = id;
-            currentSelectedModelLabel = label;
-            DOM.modelTriggerText.textContent = label;
-            DOM.customModelDropdown.classList.remove('open');
-            populateModels();
-        }
-
-        function populateModels() {
-            DOM.simpleModelList.innerHTML = '';
-            LOCAL_MODELS.forEach(model => {
-                const isSelected = model.id === currentSelectedModel;
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = 'w-full text-left py-2 px-3 rounded-md hover:bg-black/5 dark:hover:bg-white/5 text-[14px] transition-colors flex justify-between items-center group';
-
-                const labelSpan = document.createElement('span');
-                labelSpan.textContent = model.label;
-                if (isSelected) {
-                    labelSpan.className = 'font-medium';
-                }
-                btn.appendChild(labelSpan);
-
-                if (isSelected) {
-                    const checkIcon = document.createElement('span');
-                    checkIcon.className = 'text-blue-500';
-                    checkIcon.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
-                    btn.appendChild(checkIcon);
-                } else {
-                    const emptySpace = document.createElement('span');
-                    emptySpace.className = 'opacity-0 scale-75 group-hover:opacity-20 transition-all';
-                    emptySpace.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
-                    btn.appendChild(emptySpace);
-                }
-
-                btn.onclick = (e) => {
-                    e.stopPropagation();
-                    handleModelSelect(model.id, model.label);
-                };
-                DOM.simpleModelList.appendChild(btn);
-            });
-        }
-
-        async function loadModels() {
-            // Models logic replaced by custom UI implementation task 2.
-            STATE.modelDisplayNames = {
-                "claude-sonnet4.6": "Claude Sonnet 4.6",
-                "claude-opus4.6": "Claude Opus 4.6",
-                "gemini-3.1pro": "Gemini 3.1 Pro",
-                "gpt-5.2": "GPT-5.2"
-            };
-        }
-
-        function getModelDisplayName(modelId) {
-            return STATE.modelDisplayNames[modelId] || modelId;
-        }
-
-        function sanitizeChats(chats) {
-            if (!Array.isArray(chats)) return [];
-
-            return chats
-                .map(chat => {
-                    const messages = Array.isArray(chat?.messages)
-                        ? chat.messages
-                            .map(msg => {
-                                if (!msg || typeof msg !== 'object') return null;
-                                if (msg.role !== 'user' && msg.role !== 'assistant') return null;
-
-                                const content = typeof msg.content === 'string' ? msg.content : '';
-                                if (msg.role === 'user') {
-                                    if (!content.trim()) return null;
-                                    return { role: 'user', content };
-                                }
-
-                                const thinking = typeof msg.thinking === 'string' ? msg.thinking : '';
-                                const search = normalizeSearchPayload(msg.search);
-                                const modelDisplayName = typeof msg.modelDisplayName === 'string' ? msg.modelDisplayName : null;
-
-                                return {
-                                    role: 'assistant',
-                                    content,
-                                    thinking,
-                                    search,
-                                    modelDisplayName
-                                };
-                            })
-                            .filter(Boolean)
-                        : [];
-
-                    return {
-                        ...chat,
-                        messages
-                    };
-                })
-                .filter(chat => chat && typeof chat.id !== 'undefined');
-        }
-
-        // --- 6. Chat Logic Management ---
-        function saveChats() {
-            localStorage.setItem('claude_chats', JSON.stringify(STATE.chats));
-        }
-
-        // Dropdown & Action Logic
-        let activeDropdownId = null;
-
-        document.addEventListener('click', (e) => {
-            if (activeDropdownId && !e.target.closest('.chat-dropdown-container')) {
-                closeChatDropdown();
-            }
-        });
-
-        function closeChatDropdown() {
-            if (activeDropdownId) {
-                const menu = document.getElementById(`dropdown-${activeDropdownId}`);
-                if (menu) menu.classList.remove('open');
-                activeDropdownId = null;
-            }
-        }
-
-        window.toggleChatDropdown = function (e, id) {
-            e.stopPropagation();
-            if (activeDropdownId && activeDropdownId !== id) {
-                closeChatDropdown();
-            }
-            const menu = document.getElementById(`dropdown-${id}`);
-            if (menu) {
-                if (menu.classList.contains('open')) {
-                    menu.classList.remove('open');
-                    activeDropdownId = null;
-                } else {
-                    menu.classList.add('open');
-                    activeDropdownId = id;
-                }
-            }
-        };
-
-        window.toggleStar = function (e, id) {
-            e.stopPropagation();
-            closeChatDropdown();
-            const chatIndex = STATE.chats.findIndex(c => c.id === id);
-            if (chatIndex !== -1) {
-                STATE.chats[chatIndex].starred = !STATE.chats[chatIndex].starred;
-                saveChats();
-                renderChatList();
-            }
-        };
-
-        window.promptRename = function (e, id) {
-            e.stopPropagation();
-            closeChatDropdown();
-            const chat = STATE.chats.find(c => c.id === id);
-            if (!chat) return;
-            STATE.chatToRename = id;
-            DOM.renameModalInput.value = chat.title;
-            DOM.renameModal.classList.remove('opacity-0', 'pointer-events-none');
-            DOM.renameModalContent.classList.remove('scale-95');
-            DOM.renameModalInput.focus();
-        };
-
-        function startNewChat() {
-            if (STATE.isGenerating) return;
-            STATE.currentChatId = Date.now().toString();
-            DOM.headerTitle.classList.add('opacity-0');
-            DOM.chatContainer.innerHTML = '';
-            DOM.chatInput.value = '';
-            autoResizeInput();
-            DOM.welcomeScreen.classList.remove('hidden');
-
-            // Force reflow to restart animation/transition smoothly
-            void DOM.welcomeScreen.offsetWidth;
-
-            DOM.inputAreaWrapper.classList.remove('chat-state-container');
-            DOM.inputAreaWrapper.classList.add('initial-state-container');
-            DOM.inputBgMask.classList.add('opacity-0');
-            DOM.inputGradientMask.classList.add('opacity-0');
-
-            // Ensure sidebar closes on mobile
-            if (window.innerWidth < 768) toggleSidebar(false);
-            DOM.chatInput.focus();
-
-            renderChatList();
-        }
-
-        function selectChat(id) {
-            if (STATE.isGenerating) return;
-            const chat = STATE.chats.find(c => c.id === id);
-            if (!chat) return;
-
-            STATE.currentChatId = id;
-            DOM.welcomeScreen.classList.add('hidden');
-            DOM.chatContainer.innerHTML = '';
-
-            DOM.inputAreaWrapper.classList.remove('initial-state-container');
-            DOM.inputAreaWrapper.classList.add('chat-state-container');
-            DOM.inputBgMask.classList.remove('opacity-0');
-            DOM.inputGradientMask.classList.remove('opacity-0');
-
-            // Set header title
-            DOM.headerTitle.textContent = chat.title;
-            DOM.headerTitle.classList.remove('opacity-0');
-
-            chat.messages.forEach(msg => {
-                const wrapper = appendMessageToDOM(msg.role, msg.content, true, msg.modelDisplayName || null);
-                if (msg.role === 'assistant') {
-                    const restoredThinking = typeof msg.thinking === 'string' ? msg.thinking : '';
-                    const restoredSearch = normalizeSearchPayload(msg.search);
-                    if (restoredThinking.trim()) {
-                        wrapper.thinkingText = restoredThinking;
-                        updateThinkingPanel(wrapper);
-                    }
-                    if ((restoredSearch.queries.length + restoredSearch.sources.length) > 0) {
-                        wrapper.searchData = restoredSearch;
-                        updateSearchPanel(wrapper);
-                    }
-                }
-            });
-
-            if (window.innerWidth < 768) toggleSidebar(false);
-            scrollToBottom();
-
-            renderChatList();
-        }
-
-        window.deleteChat = async function (e, id) {
-            e.stopPropagation(); // Prevent selectChat
-            closeChatDropdown();
-            if (STATE.isGenerating) return;
-
-            const chat = STATE.chats.find(c => c.id === id);
-            if (!chat) return;
-
-            try {
-                if (chat.conversationId) {
-                    const response = await fetch(
-                        `${STATE.baseUrl}/v1/conversations/${encodeURIComponent(chat.conversationId)}`,
-                        {
-                            method: 'DELETE',
-                            headers: {
-                                'Authorization': `Bearer ${STATE.apiKey}`,
-                                'X-Client-Type': 'Web'
-                            }
-                        }
-                    );
-
-                    if (!response.ok && response.status !== 404) {
-                        console.error('Delete conversation failed:', response.status);
-                        return;
-                    }
-                }
-            } catch (err) {
-                console.error('Delete conversation request failed:', err);
-                return;
-            }
-
-            STATE.chats = STATE.chats.filter(c => c.id !== id);
-            saveChats();
-            renderChatList();
-            if (STATE.currentChatId === id) {
-                startNewChat();
-            }
-        };
-
-        function renderChatList() {
-            DOM.chatList.innerHTML = '';
-
-            const starredChats = STATE.chats.filter(c => c.starred).sort((a, b) => b.id - a.id);
-            const recentChats = STATE.chats.filter(c => !c.starred).sort((a, b) => b.id - a.id);
-
-            const generateItems = (chats) => {
-                chats.forEach(chat => {
-                    const btn = document.createElement('div');
-                    btn.className = `chat-item group flex items-center justify-between p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg cursor-pointer transition-colors ${chat.id === STATE.currentChatId ? 'bg-black/5 dark:bg-white/5' : ''}`;
-                    btn.onclick = () => selectChat(chat.id);
-
-                    const titleSpan = document.createElement('span');
-                    titleSpan.className = 'text-sm font-medium truncate flex-1 leading-snug';
-                    titleSpan.textContent = chat.title;
-
-                    const menuContainer = document.createElement('div');
-                    menuContainer.className = 'chat-dropdown-container relative flex items-center ml-2';
-
-                    const moreBtn = document.createElement('button');
-                    moreBtn.className = 'opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white rounded transition-opacity';
-                    moreBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1.5"></circle><circle cx="6" cy="12" r="1.5"></circle><circle cx="18" cy="12" r="1.5"></circle></svg>';
-                    // Fix: Stop propagation explicitly to prevent selectChat from triggering
-                    moreBtn.onclick = (e) => { e.stopPropagation(); toggleChatDropdown(e, chat.id); };
-
-                    const dropdown = document.createElement('div');
-                    dropdown.id = `dropdown-${chat.id}`;
-                    dropdown.className = 'absolute right-0 top-6 w-36 bg-white dark:bg-[#2a2825] border border-black/10 dark:border-white/10 rounded-xl p-1.5 z-[100] shadow-[0_4px_20px_rgba(0,0,0,0.1)] custom-dropdown flex-col gap-0.5';
-                    dropdown.innerHTML = `
-                        <button onclick="event.stopPropagation(); window.toggleStar(event, '${chat.id}')" class="w-full text-left px-2 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/10 rounded-md flex items-center gap-2 text-gray-700 dark:text-gray-300 transition-colors">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
-                            </svg>
-                            ${chat.starred ? 'Unstar' : 'Star'}
-                        </button>
-                        <button onclick="event.stopPropagation(); window.promptRename(event, '${chat.id}')" class="w-full text-left px-2 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/10 rounded-md flex items-center gap-2 text-gray-700 dark:text-gray-300 transition-colors">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M12 20h9"></path>
-                                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
-                            </svg>
-                            Rename
-                        </button>
-                        <div class="h-px bg-black/10 dark:bg-white/10 my-1 mx-1"></div>
-                        <button onclick="event.stopPropagation(); window.deleteChat(event, '${chat.id}')" class="w-full text-left px-2 py-1.5 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md flex items-center gap-2 transition-colors">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path>
-                            </svg>
-                            Delete
-                        </button>
-                    `;
-
-                    menuContainer.appendChild(moreBtn);
-                    menuContainer.appendChild(dropdown);
-
-                    btn.appendChild(titleSpan);
-                    btn.appendChild(menuContainer);
-                    DOM.chatList.appendChild(btn);
-                });
-            };
-
-            if (starredChats.length > 0) {
-                const starHeader = document.createElement('div');
-                starHeader.className = 'text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1 mt-4 px-2 tracking-wider';
-                starHeader.textContent = 'Starred';
-                DOM.chatList.appendChild(starHeader);
-                generateItems(starredChats);
-            }
-
-            if (recentChats.length > 0) {
-                const recentHeader = document.createElement('div');
-                recentHeader.className = 'text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1 mt-4 px-2 tracking-wider';
-                recentHeader.textContent = 'Recents';
-                DOM.chatList.appendChild(recentHeader);
-                generateItems(recentChats);
-            }
-        }
-
-        // --- 7. Message Formatting & Streaming ---
-        function scrollToBottom() {
-            DOM.chatContainer.scrollTo({ top: DOM.chatContainer.scrollHeight, behavior: 'smooth' });
-        }
-
-        function createMessageElement(role, modelDisplayName = 'Assistant') {
-            const wrapper = document.createElement('div');
-            wrapper.className = `flex w-full mb-4 ${role === 'user' ? 'justify-end' : 'justify-start'}`;
-
-            if (role === 'assistant') {
-                wrapper.classList.add('items-end', 'gap-3', 'relative', 'pb-[40px]');
-
-                const starContainer = document.createElement('div');
-                starContainer.className = 'message-star-container relative flex-shrink-0 opacity-0 transition-opacity duration-300';
-                setTimeout(() => starContainer.classList.remove('opacity-0'), 50);
-
-                starContainer.innerHTML = `
-                    <div class="star-tooltip absolute bottom-full mb-2 left-1/2 -translate-x-1/2 whitespace-nowrap">
-                        ${modelDisplayName}
-                    </div>
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="28" height="28" class="text-accent message-star cursor-pointer star-generating" style="fill: currentColor;">
-                        <path d="m19.6 66.5 19.7-11 .3-1-.3-.5h-1l-3.3-.2-11.2-.3L14 53l-9.5-.5-2.4-.5L0 49l1.2-1.5 2-1.3 2.9.2 6.3.5 9.5.6 6.9.4L38 49.1h1.6l.2-.7-.5-.4-.4-.4L29 41l-10.6-7-5.6-4.1-3-2-1.5-2-.6-4.2 2.7-3 3.7.3.9.2 3.7 2.9 8 6.1L37 36l1.5 1.2.6-.4.1-.3-.7-1.1L33 25l-6-10.4-2.7-4.3-.7-2.6c-.3-1-.4-2-.4-3l3-4.2L28 0l4.2.6L33.8 2l2.6 6 4.1 9.3L47 29.9l2 3.8 1 3.4.3 1h.7v-.5l1.5-7.2 1-8.7 1-11.2.3-3.2 1.6-3.8 3-2L61 2.6l2 2.9-.3 1.8-1.1 7.7L59 27.1l-1.5 8.2h.9l1-1.1 4.1-5.4 6.9-8.6 3-3.5L77 13l2.3-1.8h4.3l3.1 4.7-1.4 4.9-4.4 5.6-3.7 4.7-5.3 7.1-3.2 5.7.3.4h.7l12-2.6 6.4-1.1 7.6-1.3 3.5 1.6.4 1.6-1.4 3.4-8.2 2-9.6 2-14.3 3.3-.2.1.2.3 6.4.6 2.8.2h6.8l12.6 1 3.3 2 1.9 2.7-.3 2-5.1 2.6-6.8-1.6-16-3.8-5.4-1.3h-.8v.4l4.6 4.5 8.3 7.5L89 80.1l1.5 2.4-1.3 2-1.4-.2-9.2-7-3.6-3-8-6.8h-.5v.7l1.8 2.7 9.8 14.7.5 4.5-.7 1.4-2.6 1-2.7-.6-5.8-8-6-9.4-7-8.2-.5.4-2.9 30.2-1.3 1.5-3 1.2-2.5-2-1.4-3 1.4-6.2 1.6-8 1.3-6.4 1.2-7.9.7-2.6v-.2H49L43 72l-9 12.3-7.2 7.6-1.7.7-3-1.5.3-2.8L24 86l10-12.8 6-7.9 4-4.6-.1-.5h-.3L17.2 77.4l-4.7.6-2.2.2-3 1-1 8-5.5Z" />
-                    </svg>
-                `;
-
-                const svg = starContainer.querySelector('svg');
-                svg.addEventListener('click', () => {
-                    svg.classList.remove('star-click-anim');
-                    void svg.offsetWidth;
-                    svg.classList.add('star-click-anim');
-                });
-
-                wrapper.appendChild(starContainer);
-                wrapper.starIconRef = svg;
-            }
-
-            const bubble = document.createElement('div');
-            if (role === 'user') {
-                bubble.className = 'max-w-[85%] bg-claudeUserMsg dark:bg-darkUserMsg text-claudeText dark:text-darkText px-4 py-3 rounded-2xl rounded-tr-sm text-[15px] whitespace-pre-wrap leading-relaxed';
-            } else {
-                // AI bubble has no explicit background, spreads wide, markdown formatted
-                bubble.className = 'w-full max-w-full text-claudeText dark:text-darkText px-2 py-1 text-[15px] relative group overflow-hidden';
-            }
-
-            wrapper.appendChild(bubble);
-            return { wrapper, bubble };
-        }
-
-        function copyText(btn, text) {
-            navigator.clipboard.writeText(text).then(() => {
-                const originalSvg = btn.innerHTML;
-                btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
-                setTimeout(() => btn.innerHTML = originalSvg, 2000);
-            });
-        }
-
-        function addCodeBlockCopyButtons(container) {
-            container.querySelectorAll('pre').forEach(pre => {
-                // Avoid adding duplicate buttons
-                if (pre.querySelector('.code-copy-btn')) return;
-                const code = pre.querySelector('code');
-                if (!code) return;
-                const btn = document.createElement('button');
-                btn.className = 'code-copy-btn';
-                btn.textContent = 'Copy';
-                btn.onclick = () => {
-                    navigator.clipboard.writeText(code.innerText).then(() => {
-                        btn.textContent = 'Copied!';
-                        setTimeout(() => btn.textContent = 'Copy', 2000);
-                    });
-                };
-                pre.appendChild(btn);
-            });
-        }
-
-        function normalizeSearchPayload(payload) {
-            const normalized = { queries: [], sources: [] };
-            if (!payload || typeof payload !== 'object') return normalized;
-
-            if (Array.isArray(payload.queries)) {
-                payload.queries.forEach(q => {
-                    if (typeof q === 'string' && q.trim()) normalized.queries.push(q.trim());
-                });
-            }
-
-            const sourceCandidates = [];
-            if (Array.isArray(payload.sources)) sourceCandidates.push(...payload.sources);
-            if (Array.isArray(payload.citations)) sourceCandidates.push(...payload.citations);
-
-            sourceCandidates.forEach(src => {
-                if (typeof src === 'string' && src.trim()) {
-                    normalized.sources.push({ title: src.trim(), url: src.trim(), snippet: '' });
-                    return;
-                }
-                if (!src || typeof src !== 'object') return;
-
-                const title = String(src.title || src.name || src.sourceTitle || src.url || src.href || '').trim();
-                const url = String(src.url || src.href || src.link || '').trim();
-                const snippet = String(src.snippet || src.summary || src.description || '').trim();
-
-                if (!title && !url) return;
-                normalized.sources.push({
-                    title: title || url,
-                    url,
-                    snippet
-                });
-            });
-
-            return normalized;
-        }
-
-        function mergeSearchState(target, payload) {
-            const normalized = normalizeSearchPayload(payload);
-
-            normalized.queries.forEach(query => {
-                if (!target.queries.includes(query)) target.queries.push(query);
-            });
-
-            normalized.sources.forEach(source => {
-                const exists = target.sources.some(existing =>
-                    existing.title === source.title && existing.url === source.url
-                );
-                if (!exists) target.sources.push(source);
-            });
-        }
-
-        function updateSearchPanel(wrapper) {
-            const container = wrapper.searchContainerRef;
-            if (!container) return;
-
-            const queries = wrapper.searchData?.queries || [];
-            const sources = wrapper.searchData?.sources || [];
-            const hasSearchData = queries.length > 0 || sources.length > 0;
-
-            if (!hasSearchData) {
-                container.classList.add('hidden');
-                return;
-            }
-
-            container.classList.remove('hidden');
-
-            const displayCount = sources.length || queries.length;
-            const arrow = wrapper.searchExpanded ? '▾' : '▸';
-            wrapper.searchToggleRef.textContent = `已搜索 ${displayCount} 个来源 ${arrow} `;
-
-            wrapper.searchQueryRef.textContent = queries.length
-                ? `搜索: ${queries.map(q => `"${q}"`).join('、')} `
-                : '已执行联网搜索';
-
-            wrapper.searchLinksRef.innerHTML = '';
-            if (sources.length === 0) {
-                const empty = document.createElement('div');
-                empty.className = 'search-empty';
-                empty.textContent = '暂未收到可展示来源。';
-                wrapper.searchLinksRef.appendChild(empty);
-            } else {
-                sources.forEach(source => {
-                    const row = document.createElement('div');
-                    if (source.url) {
-                        const link = document.createElement('a');
-                        link.className = 'search-source-link';
-                        link.href = source.url;
-                        link.target = '_blank';
-                        link.rel = 'noopener noreferrer';
-                        link.textContent = source.title || source.url;
-                        row.appendChild(link);
-                    } else {
-                        row.textContent = source.title;
-                    }
-                    wrapper.searchLinksRef.appendChild(row);
-                });
-            }
-
-            if (wrapper.searchExpanded) {
-                wrapper.searchDetailsRef.classList.remove('hidden');
-            } else {
-                wrapper.searchDetailsRef.classList.add('hidden');
-            }
-        }
-
-        function appendMessageToDOM(role, content, isFinished = false, modelDisplayName = null) {
-            const resolvedModelDisplayName = (modelDisplayName || getModelDisplayName(currentSelectedModel)).trim() || 'Assistant';
-            const { wrapper, bubble } = createMessageElement(role, resolvedModelDisplayName);
-
-            if (role === 'user') {
-                bubble.textContent = content;
-            } else {
-                const searchContainer = document.createElement('div');
-                searchContainer.className = 'search-sources hidden';
-
-                const searchToggle = document.createElement('button');
-                searchToggle.className = 'search-toggle';
-                searchToggle.type = 'button';
-                searchToggle.textContent = '已搜索 0 个来源 ▸';
-
-                const searchDetails = document.createElement('div');
-                searchDetails.className = 'search-details hidden';
-
-                const searchQuery = document.createElement('div');
-                searchQuery.className = 'search-query';
-                searchDetails.appendChild(searchQuery);
-
-                const searchLinks = document.createElement('div');
-                searchLinks.className = 'search-links';
-                searchDetails.appendChild(searchLinks);
-
-                searchContainer.appendChild(searchToggle);
-                searchContainer.appendChild(searchDetails);
-                bubble.appendChild(searchContainer);
-
-                const resolvedModelDisplayName = (modelDisplayName || getModelDisplayName(currentSelectedModel)).trim() || 'Assistant';
-                const thinkingContainer = document.createElement('div');
-                thinkingContainer.className = 'thinking-sources hidden';
-
-                const thinkingToggle = document.createElement('button');
-                thinkingToggle.className = 'thinking-toggle';
-                thinkingToggle.type = 'button';
-                thinkingToggle.textContent = `${resolvedModelDisplayName} 's thinking: ▸`;
-
-                const thinkingDetails = document.createElement('div');
-                thinkingDetails.className = 'thinking-details hidden';
-
-                const thinkingMarkdown = document.createElement('div');
-                thinkingMarkdown.className = 'markdown-body thinking-markdown text-claudeText dark:text-darkText';
-                thinkingDetails.appendChild(thinkingMarkdown);
-
-                thinkingContainer.appendChild(thinkingToggle);
-                thinkingContainer.appendChild(thinkingDetails);
-                bubble.appendChild(thinkingContainer);
-
-                const mdDiv = document.createElement('div');
-                mdDiv.className = 'markdown-body text-claudeText dark:text-darkText';
-                bubble.appendChild(mdDiv);
-
-                if (content === '') {
-                    if (isFinished) {
-                        setSafeMarkdown(mdDiv, '*未收到可显示的正文回复。*');
-                    } else {
-                        mdDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
-                    }
-                } else {
-                    setSafeMarkdown(mdDiv, content);
-                    if (isFinished) {
-                        mdDiv.querySelectorAll('pre code').forEach((block) => {
-                            hljs.highlightElement(block);
-                        });
-                        addCodeBlockCopyButtons(mdDiv);
-                    }
-                }
-
-                wrapper.bubbleRef = bubble;
-                wrapper.mdDivRef = mdDiv;
-                wrapper.searchContainerRef = searchContainer;
-                wrapper.searchToggleRef = searchToggle;
-                wrapper.searchDetailsRef = searchDetails;
-                wrapper.searchQueryRef = searchQuery;
-                wrapper.searchLinksRef = searchLinks;
-                wrapper.searchExpanded = false;
-                wrapper.searchData = { queries: [], sources: [] };
-
-                wrapper.thinkingContainerRef = thinkingContainer;
-                wrapper.thinkingToggleRef = thinkingToggle;
-                wrapper.thinkingDetailsRef = thinkingDetails;
-                wrapper.thinkingMarkdownRef = thinkingMarkdown;
-                wrapper.thinkingExpanded = false;
-                wrapper.thinkingText = '';
-                wrapper.thinkingModelDisplayName = resolvedModelDisplayName;
-
-                searchToggle.addEventListener('click', () => {
-                    wrapper.searchExpanded = !wrapper.searchExpanded;
-                    updateSearchPanel(wrapper);
-                });
-
-                thinkingToggle.addEventListener('click', () => {
-                    wrapper.thinkingExpanded = !wrapper.thinkingExpanded;
-                    updateThinkingPanel(wrapper);
-                });
-            }
-
-            DOM.chatContainer.appendChild(wrapper);
-            return wrapper;
-        }
-
-        function updateThinkingPanel(wrapper) {
-            const container = wrapper.thinkingContainerRef;
-            if (!container) return;
-
-            const rawText = String(wrapper.thinkingText || '');
-            const hasThinking = rawText.trim().length > 0;
-            if (!hasThinking) {
-                container.classList.add('hidden');
-                wrapper.thinkingDetailsRef.classList.add('hidden');
-                return;
-            }
-
-            container.classList.remove('hidden');
-            const arrow = wrapper.thinkingExpanded ? '▾' : '▸';
-            const modelName = (wrapper.thinkingModelDisplayName || 'Assistant').trim() || 'Assistant';
-            wrapper.thinkingToggleRef.textContent = `${modelName}'s thinking: ${arrow}`;
-
-            if (wrapper.thinkingExpanded) {
-                wrapper.thinkingDetailsRef.classList.remove('hidden');
-                setSafeMarkdown(wrapper.thinkingMarkdownRef, rawText);
-            } else {
-                wrapper.thinkingDetailsRef.classList.add('hidden');
-            }
-        }
-
-        function updateAIMessageDOM(wrapper, content, isFinished) {
-            if (isFinished && wrapper.starIconRef) {
-                wrapper.starIconRef.classList.remove('star-generating');
-            }
-            const mdDiv = wrapper.mdDivRef;
-            if (!content && !isFinished) {
-                mdDiv.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
-                return;
-            }
-
-            setSafeMarkdown(mdDiv, content);
-            if (isFinished) {
-                mdDiv.querySelectorAll('pre code').forEach((block) => {
-                    if (!block.dataset.highlighted) hljs.highlightElement(block);
-                });
-                addCodeBlockCopyButtons(mdDiv);
-            }
-            if (DOM.chatContainer.scrollHeight - DOM.chatContainer.scrollTop < DOM.chatContainer.clientHeight + 100) {
-                scrollToBottom();
-            }
-        }
-
-        async function handleSend() {
-            if (STATE.isGenerating) return;
-            const text = DOM.chatInput.value.trim();
-            if (!text) return;
-
-            let chat = STATE.chats.find(c => c.id === STATE.currentChatId);
-            const isNewChat = !chat;
-
-            if (isNewChat) {
-                chat = {
-                    id: STATE.currentChatId,
-                    title: text.length > 12 ? text.substring(0, 12) + '...' : text,
-                    messages: [],
-                    conversationId: null
-                };
-                STATE.chats.push(chat);
-                DOM.headerTitle.textContent = chat.title;
-                DOM.headerTitle.classList.remove('opacity-0');
-            }
-
-            DOM.chatInput.value = '';
-            autoResizeInput();
-            DOM.welcomeScreen.classList.add('hidden');
-
-            DOM.inputAreaWrapper.classList.remove('initial-state-container');
-            DOM.inputAreaWrapper.classList.add('chat-state-container');
-            DOM.inputBgMask.classList.remove('opacity-0');
-            DOM.inputGradientMask.classList.remove('opacity-0');
-
-            chat.messages.push({ role: 'user', content: text });
-            appendMessageToDOM('user', text, true);
-            saveChats();
-            renderChatList();
-            scrollToBottom();
-
-            const selectedModel = currentSelectedModel;
-            const selectedModelDisplayName = getModelDisplayName(currentSelectedModel);
-
-            const aiWrapper = appendMessageToDOM('assistant', '', false, selectedModelDisplayName);
-            const searchState = { queries: [], sources: [] };
-            let thinkingText = '';
-            scrollToBottom();
-
-            STATE.isGenerating = true;
-            DOM.sendBtn.disabled = true;
-            DOM.chatInput.disabled = true;
-
-            try {
-                STATE.controller = new AbortController();
-                const requestMessages = chat.messages
-                    .filter(msg => (
-                        msg
-                        && typeof msg === 'object'
-                        && (msg.role === 'user' || msg.role === 'assistant')
-                    ))
-                    .map(msg => ({ role: msg.role, content: String(msg.content || ''), thinking: String(msg.thinking || '') }));
-                const response = await fetch(`${STATE.baseUrl}/v1/chat/completions`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${STATE.apiKey}`,
-                        'X-Client-Type': 'Web'
-                    },
-                    body: JSON.stringify({
-                        model: selectedModel,
-                        messages: requestMessages,
-                        conversation_id: chat.conversationId || null,
-                        stream: true
-                    }),
-                    signal: STATE.controller.signal
-                });
-
-                const memoryStatus = (response.headers.get('X-Memory-Status') || '').toLowerCase();
-                if (memoryStatus === 'degraded') {
-                    notifyMemoryDegradedOnce();
-                }
-                const backendConversationId = (response.headers.get('X-Conversation-Id') || '').trim();
-                if (backendConversationId && chat.conversationId !== backendConversationId) {
-                    chat.conversationId = backendConversationId;
-                    saveChats();
-                }
-
-                if (!response.ok) {
-                    if (response.status === 401) {
-                        throw new Error("API KEY doesn't match.");
-                    }
-                    throw new Error(`HTTP Error: ${response.status}`);
-                }
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder('utf-8');
-                let fullAiReply = '';
-                let sseBuffer = '';
-
-                const consumePayload = (payload) => {
-                    if (!payload || payload === '[DONE]') return;
-
-                    let dataObj;
-                    try {
-                        dataObj = JSON.parse(payload);
-                    } catch (e) {
-                        return;
-                    }
-
-                    if (dataObj?.type === 'search_metadata') {
-                        mergeSearchState(searchState, dataObj.searches || {});
-                        aiWrapper.searchData = searchState;
-                        updateSearchPanel(aiWrapper);
-                        return;
-                    }
-
-                    if (dataObj?.type === 'thinking_chunk') {
-                        const chunk = typeof dataObj.text === 'string' ? dataObj.text : '';
-                        if (chunk) {
-                            thinkingText += chunk;
-                            aiWrapper.thinkingText = thinkingText;
-                            updateThinkingPanel(aiWrapper);
-                        }
-                        return;
-                    }
-
-                    if (dataObj?.type === 'content_replace') {
-                        const replacement = typeof dataObj.content === 'string' ? dataObj.content : '';
-                        if (replacement) {
-                            fullAiReply = replacement;
-                            updateAIMessageDOM(aiWrapper, fullAiReply, false);
-                        }
-                        return;
-                    }
-
-                    if (dataObj?.type === 'thinking_replace') {
-                        thinkingText = typeof dataObj.thinking === 'string' ? dataObj.thinking : '';
-                        aiWrapper.thinkingText = thinkingText;
-                        updateThinkingPanel(aiWrapper);
-                        return;
-                    }
-
-                    const deltaReasoning = dataObj?.choices?.[0]?.delta?.reasoning_content || '';
-                    if (deltaReasoning) {
-                        thinkingText += deltaReasoning;
-                        aiWrapper.thinkingText = thinkingText;
-                        updateThinkingPanel(aiWrapper);
-                    }
-
-                    const deltaContent = dataObj?.choices?.[0]?.delta?.content || '';
-                    if (deltaContent) {
-                        fullAiReply += deltaContent;
-                        updateAIMessageDOM(aiWrapper, fullAiReply, false);
-                    }
-                };
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    sseBuffer += decoder.decode(value, { stream: true });
-                    const events = sseBuffer.split('\n\n');
-                    sseBuffer = events.pop() || '';
-
-                    for (const eventBlock of events) {
-                        const lines = eventBlock.split('\n');
-                        for (let line of lines) {
-                            line = line.trim();
-                            if (!line.startsWith('data:')) continue;
-                            consumePayload(line.slice(5).trim());
-                        }
-                    }
-                }
-
-                if (sseBuffer.trim().startsWith('data:')) {
-                    consumePayload(sseBuffer.trim().slice(5).trim());
-                }
-
-                aiWrapper.searchData = searchState;
-                updateSearchPanel(aiWrapper);
-                aiWrapper.thinkingText = thinkingText;
-                updateThinkingPanel(aiWrapper);
-                const normalizedSearchSnapshot = normalizeSearchPayload(searchState);
-                const hasThinking = thinkingText.trim().length > 0;
-                const hasSearch = (normalizedSearchSnapshot.queries.length + normalizedSearchSnapshot.sources.length) > 0;
-                if (fullAiReply.trim()) {
-                    updateAIMessageDOM(aiWrapper, fullAiReply, true);
-                    chat.messages.push({
-                        role: 'assistant',
-                        content: fullAiReply,
-                        thinking: thinkingText,
-                        search: normalizedSearchSnapshot,
-                        modelDisplayName: selectedModelDisplayName
-                    });
-                    saveChats();
-                } else if (hasThinking || hasSearch) {
-                    updateAIMessageDOM(aiWrapper, '*未收到可显示的正文回复。*', true);
-                    chat.messages.push({
-                        role: 'assistant',
-                        content: '',
-                        thinking: thinkingText,
-                        search: normalizedSearchSnapshot,
-                        modelDisplayName: selectedModelDisplayName
-                    });
-                    saveChats();
-                } else {
-                    updateAIMessageDOM(aiWrapper, '*未收到可显示的正文回复。*', true);
-                }
-
-            } catch (err) {
-                if (err.name !== 'AbortError') {
-                    console.error('API Error:', err);
-                    updateAIMessageDOM(aiWrapper, `**Error:** Failed to connect to backend.
-
-${err.message}`, true);
-                }
-            } finally {
-                STATE.isGenerating = false;
-                DOM.sendBtn.disabled = false;
-                DOM.chatInput.disabled = false;
-                DOM.chatInput.focus();
-                STATE.controller = null;
-            }
-        }
-
-        // --- Dynamic Welcome Message ---
-        function updateWelcomeGreeting() {
-            const greetingEl = document.getElementById('welcomeGreeting');
-            if (!greetingEl) return;
-
-            // Get current time in China Standard Time (UTC+8)
-            const now = new Date();
-            const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-            const cstDate = new Date(utc + (3600000 * 8));
-            const hour = cstDate.getHours();
-            const minute = cstDate.getMinutes();
-            const timeStr = hour + minute / 60;
-
-            let greeting = "Golden hour thinking";
-            if (timeStr >= 5 && timeStr < 9) {
-                greeting = "Early bird thinking";
-            } else if (timeStr >= 9 && timeStr < 11.5) {
-                greeting = "Morning clarity";
-            } else if (timeStr >= 11.5 && timeStr < 13.5) {
-                greeting = "Midday focus";
-            } else if (timeStr >= 13.5 && timeStr < 17) {
-                greeting = "Afternoon momentum";
-            } else if (timeStr >= 17 && timeStr < 19) {
-                greeting = "Golden hour thinking";
-            } else if (timeStr >= 19 && timeStr < 22) {
-                greeting = "Evening deep work";
-            } else if (timeStr >= 22 || timeStr < 1) {
-                greeting = "Night owl mode";
-            } else if (timeStr >= 1 && timeStr < 5) {
-                greeting = "Late night thinking";
-            }
-
-            greetingEl.textContent = greeting;
-        }
-
-        setInterval(updateWelcomeGreeting, 60000);
-
-        // --- Run App ---
-        window.addEventListener('DOMContentLoaded', init);
-    </script>
+    <!-- Modular JavaScript Files (Load Order Critical) -->
+    <!-- Utils -->
+    <script src="js/utils/validation.js"></script>
+    <script src="js/utils/markdown.js"></script>
+    <script src="js/utils/dom.js"></script>
+
+    <!-- Core -->
+    <script src="js/core/constants.js"></script>
+    <script src="js/core/state.js"></script>
+
+    <!-- API -->
+    <script src="js/api/client.js"></script>
+    <script src="js/api/models.js"></script>
+    <script src="js/api/settings.js"></script>
+
+    <!-- Chat -->
+    <script src="js/chat/storage.js"></script>
+    <script src="js/chat/renderer.js"></script>
+    <script src="js/chat/streaming.js"></script>
+    <script src="js/chat/manager.js"></script>
+
+    <!-- UI -->
+    <script src="js/ui/theme.js"></script>
+    <script src="js/ui/sidebar.js"></script>
+    <script src="js/ui/modal.js"></script>
+    <script src="js/ui/input.js"></script>
+
+    <!-- Application Entry Point -->
+    <script src="js/core/app.js"></script>
 </body>
 
 </html>

@@ -1,0 +1,155 @@
+/**
+ * Markdown Stylesheet
+ * Markdown content rendering and code block styles
+ */
+
+/* Markdown Content Styling */
+.markdown-body {
+    font-size: 1rem;
+    line-height: 1.6;
+}
+
+.markdown-body p {
+    margin-bottom: 1em;
+}
+
+.markdown-body pre {
+    background-color: #1a1a1a !important;
+    border-radius: 0.5rem;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1em 0;
+    position: relative;
+}
+
+/* Per-code-block copy button */
+.code-copy-btn {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    background: rgba(255, 255, 255, 0.07);
+    color: #aaa;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 0.35rem;
+    font-size: 0.7rem;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.2s;
+    font-family: inherit;
+}
+
+.markdown-body pre:hover .code-copy-btn {
+    opacity: 1;
+}
+
+.code-copy-btn:hover {
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+}
+
+.markdown-body code {
+    font-family: Consolas, Monaco, "Courier New", monospace;
+    font-size: 0.9em;
+}
+
+/* Inline code */
+.markdown-body p code,
+.markdown-body li code {
+    background-color: rgba(0, 0, 0, 0.05);
+    padding: 0.2em 0.4em;
+    border-radius: 0.25rem;
+    color: #d15050;
+}
+
+html.dark .markdown-body p code,
+html.dark .markdown-body li code {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: #ff8c8c;
+}
+
+.markdown-body ul {
+    list-style-type: disc;
+    padding-left: 2em;
+    margin-bottom: 1em;
+}
+
+.markdown-body ol {
+    list-style-type: decimal;
+    padding-left: 2em;
+    margin-bottom: 1em;
+}
+
+/* Search metadata block */
+.search-sources,
+.thinking-sources {
+    margin-bottom: 0.6rem;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 0.6rem;
+    background: rgba(0, 0, 0, 0.03);
+    color: #666;
+    font-size: 0.75rem;
+    line-height: 1.4;
+}
+
+html.dark .search-sources,
+html.dark .thinking-sources {
+    border-color: rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.06);
+    color: #bdbdbd;
+}
+
+.search-toggle,
+.thinking-toggle {
+    width: 100%;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    text-align: left;
+    font-size: inherit;
+    cursor: pointer;
+    padding: 0;
+}
+
+.search-details,
+.thinking-details {
+    margin-top: 0.45rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.search-links {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.search-source-link {
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    opacity: 0.95;
+}
+
+.search-source-link:hover {
+    opacity: 0.75;
+}
+
+.search-empty {
+    opacity: 0.75;
+}
+
+.thinking-markdown {
+    font-size: inherit;
+    line-height: 1.45;
+}
+
+.thinking-markdown p {
+    margin-bottom: 0.55em;
+}
+
+.thinking-markdown pre {
+    margin: 0.45rem 0;
+}

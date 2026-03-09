@@ -1,0 +1,148 @@
+/**
+ * Main Stylesheet
+ * Global styles, Tailwind configuration, and base theme styles
+ */
+
+/* Base global transitions */
+body {
+    font-family: 'Lora', Georgia, serif;
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Subtle Background Texture (Dark Mode) */
+html.dark body {
+    background: radial-gradient(ellipse at 50% 30%, #222018 0%, #161614 60%, #111110 100%);
+    background-attachment: fixed;
+}
+
+/* Hide scrollbars for cleaner look like native apps */
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+
+.no-scrollbar {
+    -ms-overflow-style: none;
+    /* IE and Edge */
+    scrollbar-width: none;
+    /* Firefox */
+}
+
+/* Input Box Polish */
+.chat-input-wrapper {
+    transition: box-shadow 0.2s ease, border-color 0.2s ease;
+    border: 1px solid rgba(196, 120, 80, 0.25) !important;
+}
+
+.chat-input-wrapper:focus-within {
+    box-shadow: 0 0 0 1.5px rgba(196, 120, 80, 0.4) !important;
+    border-color: rgba(196, 120, 80, 0.4) !important;
+}
+
+/* Custom placeholder color */
+html.dark #chatInput::placeholder {
+    color: rgba(255, 255, 255, 0.3) !important;
+}
+
+html:not(.dark) #chatInput::placeholder {
+    color: rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Memory Banner */
+.memory-banner {
+    border-left: 3px solid #da7756;
+    background: #f2f0eb;
+    color: #2d2d2d;
+}
+
+html.dark .memory-banner {
+    background: #383838;
+    color: #e5e5e5;
+}
+
+.memory-banner-icon {
+    color: #da7756;
+}
+
+.memory-banner-close {
+    color: inherit;
+    opacity: 0.72;
+}
+
+.memory-banner-close:hover {
+    opacity: 1;
+}
+
+/* Welcome Title Typography */
+.welcome-title {
+    font-family: 'Lora', serif;
+    font-size: clamp(2rem, 3.8vw, 2.8rem);
+    letter-spacing: 0.01em;
+}
+
+/* Task 1: Initial State & Chat State Transitions */
+#inputAreaWrapper {
+    transition: bottom 0.5s cubic-bezier(0.2, 0, 0, 1), transform 0.5s cubic-bezier(0.2, 0, 0, 1), background-color 0.3s ease;
+}
+
+.initial-state-container {
+    position: absolute !important;
+    top: 56px;
+    /* below header */
+    bottom: 0 !important;
+    left: 0;
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start !important;
+    /* Shift up to match user's red/blue box reference robustly */
+    padding-top: 20vh !important;
+    padding-bottom: 0 !important;
+    transform: none !important;
+}
+
+/* Dynamically narrow down the input box on initial state */
+.initial-state-container .max-w-2xl {
+    max-width: 38rem !important;
+    /* between xl and 2xl */
+}
+
+.chat-state-container .max-w-2xl {
+    transition: max-width 0.4s ease;
+}
+
+/* Taller input box on initial state */
+.initial-state-container #chatInput {
+    min-height: 80px !important;
+    padding-top: 1.5rem !important;
+    transition: min-height 0.4s ease, padding 0.4s ease;
+}
+
+.chat-state-container {
+    position: absolute !important;
+    bottom: 0px !important;
+    top: auto !important;
+    display: block;
+    transform: translateY(0);
+}
+
+#inputGradientMask,
+#inputBgMask {
+    transition: opacity 0.5s ease;
+}
+
+#welcomeScreen {
+    transition: opacity 0.3s ease, height 0.3s ease, margin 0.3s ease, transform 0.3s ease;
+    transform: translateY(0);
+}
+
+#welcomeScreen.hidden {
+    display: flex !important;
+    opacity: 0 !important;
+    pointer-events: none;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden;
+    transform: translateY(-20px);
+}

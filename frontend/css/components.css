@@ -1,0 +1,35 @@
+/**
+ * Components Stylesheet
+ * UI component-specific styles
+ */
+
+/* Claude Style Custom Select */
+#customModelDropdown {
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity 0.15s ease, transform 0.15s ease;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    font-family: 'Lora', Georgia, serif;
+}
+
+#customModelDropdown.open {
+    pointer-events: auto;
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* 3-Dot Custom Dropdown */
+.custom-dropdown {
+    display: none;
+    opacity: 0;
+    transform: scale(0.95);
+    transform-origin: top right;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.custom-dropdown.open {
+    display: flex;
+    opacity: 1;
+    transform: scale(1);
+}
