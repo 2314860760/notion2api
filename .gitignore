@@ -35,7 +35,7 @@ AI-note/
 GEMINI.md
 CODEX.md
 ref/
-delete_by_threadID.py
+tests/
 *.md.bak
 
 # Claude Code local settings
