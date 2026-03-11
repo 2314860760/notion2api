@@ -61,3 +61,7 @@ debug_*.py
 # Docker (Optional to ignore if you want to keep configs in git, usually we keep them)
 # But we definitely ignore local-specific overrides
 docker-compose.override.yml
+
+# Local cleanup folder
+0311_cleanup/
+
