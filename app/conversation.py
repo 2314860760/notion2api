@@ -1898,3 +1898,80 @@ def build_lite_transcript(user_prompt: str, model_name: str) -> list[dict[str, A
             "value": [[user_prompt]]
         }
     ]
+
+
+def build_standard_transcript(messages: list[dict[str, Any]], model_name: str) -> list[dict[str, Any]]:
+    """
+    构建 Standard 模式的 transcript（完整上下文）
+
+    Args:
+        messages: OpenAI 格式的 messages 数组（完整历史）
+        model_name: 模型名称
+
+    Returns:
+        Notion transcript 数组
+
+    参考：notion-2api 项目的实现
+    """
+    from app.model_registry import get_notion_model, get_thread_type
+    from app.config import get_default_account
+    import uuid
+    from datetime import datetime
+
+    account = get_default_account()
+    notion_model = get_notion_model(model_name)
+    thread_type = get_thread_type(model_name)
+
+    # 基础 transcript：config + context
+    transcript = [
+        {
+            "id": str(uuid.uuid4()),
+            "type": "config",
+            "value": {
+                "type": thread_type,
+                "model": notion_model,
+                "modelFromUser": True,
+                "useWebSearch": True,
+            }
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "type": "context",
+            "value": {
+                "timezone": "Asia/Shanghai",
+                "currentDatetime": datetime.now().astimezone().isoformat(),
+                "userId": account.get("user_id", ""),
+                "spaceId": account.get("space_id", ""),
+            }
+        }
+    ]
+
+    # 转换 OpenAI messages 到 Notion transcript
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content", "")
+
+        if role == "user":
+            transcript.append({
+                "id": str(uuid.uuid4()),
+                "type": "user",
+                "value": [[content]],
+                "userId": account.get("user_id", ""),
+                "createdAt": datetime.now().astimezone().isoformat()
+            })
+        elif role == "assistant":
+            transcript.append({
+                "id": str(uuid.uuid4()),
+                "type": "agent-inference",
+                "value": [
+                    {
+                        "type": "text",
+                        "content": content
+                    }
+                ]
+            })
+        elif role == "system":
+            # system 消息可以作为 context 的一部分
+            pass
+
+    return transcript

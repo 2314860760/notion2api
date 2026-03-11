@@ -36,11 +36,15 @@ SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 
-# APP_MODE: heavy（默认）或 lite
+# APP_MODE: heavy（默认）、lite 或 standard
 APP_MODE = os.getenv("APP_MODE", "heavy").lower().strip()
 
 def is_lite_mode() -> bool:
     return APP_MODE == "lite"
+
+def is_standard_mode() -> bool:
+    """Standard 模式：发送完整上下文，支持 thinking 和搜索输出"""
+    return APP_MODE == "standard"
 
 def get_default_account():
     """获取默认账号（列表中的第一个账号）"""

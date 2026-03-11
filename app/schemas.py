@@ -1,5 +1,5 @@
 import time
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 # ================================
@@ -45,6 +45,8 @@ class ChatCompletionResponse(BaseModel):
     usage: Dict[str, int] = Field(
         default_factory=lambda: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     )
+    # Standard 模式扩展字段
+    search_metadata: Optional[Dict[str, Any]] = Field(default=None, exclude=True)
 
 # ================================
 # 流式返回 Schema (供内部组织)
