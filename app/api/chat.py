@@ -229,8 +229,70 @@ def _build_thinking_replacement(
     final_source_type: str,
 ) -> dict[str, Any] | None:
     source = str(final_source_type or "").strip().lower()
-    if source != "agent-inference":
+
+    # Relax constraint: Allow replacement for more source types to fix Sonnet thinking leakage
+    # But still require minimal validation for non-inference sources
+    if source not in ("agent-inference", "text", "markdown-chat", ""):
+        # Only skip for clearly non-thinking source types
         return None
+
+    normalized_final = _normalize_overlap_text(final_reply)
+    normalized_streamed = _normalize_overlap_text(streamed_content_text)
+
+    # Require at least some thinking content to process
+    if not _normalize_overlap_text(thinking_text):
+        return None
+
+    # For non-agent-inference sources, be more conservative but still check for obvious duplication
+    if source != "agent-inference":
+        # Only process if there's clear overlap or thinking is redundant
+        if not normalized_final:
+            return None
+
+        # Check for obvious duplication (thinking appears in final reply)
+        if thinking_text.strip() in final_reply or final_reply in thinking_text:
+            # Clear case of duplication - trim it
+            replacement, decision, overlap_ratio = _trim_redundant_thinking(thinking_text, final_reply)
+            if replacement != str(thinking_text or "").strip():
+                logger.debug(
+                    "Non-agent-inference thinking replacement applied",
+                    extra={
+                        "request_info": {
+                            "event": "thinking_replacement_non_agent",
+                            "source_type": source,
+                            "overlap_ratio": round(overlap_ratio, 4),
+                            "decision": f"{decision}_non_agent_inference",
+                        }
+                    },
+                )
+                return {
+                    "thinking": replacement,
+                    "decision": f"{decision}_non_agent_inference",
+                    "overlap_ratio": round(overlap_ratio, 4),
+                    "source_type": source,
+                }
+        return None
+
+    # Original agent-inference logic continues
+    if not normalized_final:
+        return None
+
+    # 只在几乎没有真实正文增量时做裁决，避免误伤复杂推理场景。
+    if normalized_streamed and len(normalized_streamed) >= max(10, int(len(normalized_final) * 0.35)):
+        return None
+
+    replacement, decision, overlap_ratio = _trim_redundant_thinking(thinking_text, final_reply)
+    if replacement == str(thinking_text or "").strip():
+        return None
+
+    return {
+        "thinking": replacement,
+        "decision": decision,
+        "overlap_ratio": round(overlap_ratio, 4),
+        "source_type": source,
+    }
+
+
 
     normalized_final = _normalize_overlap_text(final_reply)
     normalized_streamed = _normalize_overlap_text(streamed_content_text)
@@ -1176,6 +1238,7 @@ async def create_chat_completion(
                 assistant_started = False
                 pending_search_md = ""
                 client_type = request.headers.get("X-Client-Type", "").lower()
+                recent_thinking_buffer: list[str] = []
 
                 try:
                     for raw_item in _iter_stream_items(first_item, stream_gen):
@@ -1206,6 +1269,12 @@ async def create_chat_completion(
                             thinking_text = item.get("text", "")
                             if thinking_text:
                                 thinking_accumulator += thinking_text
+                                # Track recent thinking for overlap detection
+                                recent_thinking_buffer.append(thinking_text)
+                                # Keep buffer manageable (max 5 recent chunks)
+                                if len(recent_thinking_buffer) > 5:
+                                    recent_thinking_buffer.pop(0)
+                                
                                 if not assistant_started:
                                     assistant_started = True
                                     yield _build_stream_chunk(
@@ -1228,6 +1297,28 @@ async def create_chat_completion(
                         chunk_text = item.get("text", "")
                         if not chunk_text and not pending_search_md:
                             continue
+
+                        # Check if content overlaps with recent thinking (prevents thinking leakage)
+                        if recent_thinking_buffer and chunk_text.strip():
+                            combined_recent_thinking = " ".join(recent_thinking_buffer)
+                            chunk_normalized = chunk_text.strip()
+                            
+                            # Check for significant overlap - skip duplicate content
+                            if (chunk_normalized in combined_recent_thinking or 
+                                combined_recent_thinking.find(chunk_normalized) != -1 or
+                                (len(chunk_normalized) > 20 and chunk_normalized[:20] in combined_recent_thinking)):
+                                # Skip this chunk as it's likely duplicated thinking content
+                                logger.debug(
+                                    "Skipping duplicate content chunk that overlaps with thinking",
+                                    extra={
+                                        "request_info": {
+                                            "event": "content_overlap_with_thinking",
+                                            "chunk_length": len(chunk_text),
+                                            "overlap_detected": True,
+                                        }
+                                    },
+                                )
+                                continue
 
                         # 在第一个正文内容发出前，把积攒的搜索信息拼上去
                         if pending_search_md and client_type != "web":

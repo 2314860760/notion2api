@@ -840,6 +840,10 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                                 "val_idx": vid,
                                 "val_class": val_class,
                                 "effective_type": effective_type,
+                                "patch_path": patch_path,
+                                "value_add_idx": value_add_idx,
+                                "patch_v_type": type(patch_v).__name__,
+                                "registered_value_types": dict(value_types),
                             }
                         },
                     )
@@ -853,10 +857,49 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                 val_idx = _extract_value_index(patch_path)
                 if val_idx is not None and patch_seg is not None and (patch_seg, val_idx) in value_types:
                     seg_owner = value_types[(patch_seg, val_idx)]
+                    logger.debug(
+                        "Patch role from value_types",
+                        extra={
+                            "request_info": {
+                                "event": "patch_role_value_lookup",
+                                "patch_op": patch_op,
+                                "patch_seg": patch_seg,
+                                "val_idx": val_idx,
+                                "seg_owner": seg_owner,
+                                "patch_path": patch_path,
+                            }
+                        },
+                    )
                 elif patch_seg is not None and patch_seg in segment_types:
                     seg_owner = segment_types[patch_seg]
+                    logger.debug(
+                        "Patch role from segment_types fallback",
+                        extra={
+                            "request_info": {
+                                "event": "patch_role_segment_fallback",
+                                "patch_op": patch_op,
+                                "patch_seg": patch_seg,
+                                "val_idx": val_idx,
+                                "seg_owner": seg_owner,
+                                "value_types_missing": (patch_seg, val_idx) not in value_types if val_idx is not None else None,
+                                "patch_path": patch_path,
+                            }
+                        },
+                    )
                 else:
                     seg_owner = SEG_CONTENT
+                    logger.debug(
+                        "Patch role defaulting to content",
+                        extra={
+                            "request_info": {
+                                "event": "patch_role_default_content",
+                                "patch_op": patch_op,
+                                "patch_seg": patch_seg,
+                                "val_idx": val_idx,
+                                "patch_path": patch_path,
+                            }
+                        },
+                    )
 
             # ========== 搜索元数据（与段落角色无关，始终提取） ==========
             is_search_patch = _looks_like_search_patch(patch)
@@ -904,24 +947,62 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
             if seg_owner == SEG_META:
                 continue
             if seg_owner in (SEG_THINKING, SEG_TOOL):
-                # 关键修复：处理 Opus/GPT 模型的 thinking 内容溢出问题
-                # 某些模型（特别是 Opus）会在 thinking 内容中包含正文
-                # 检测分割点：第一个 "\n\n" 后接中文或英文���案
+                # Enhanced fix for Opus/GPT/Sonnet thinking content overflow
+                # Some models (especially Opus/Sonnet) include main content in thinking
+                # Detect split point: first "\n\n" followed by Chinese or English response
                 thinking_text = cleaned
 
-                # 检测是否包含内容溢出
+                # Detect content overflow
                 overflow_split = None
-                patterns = ["\n\n在", "\n\nThe", "\n\n回答", "\n\nAnswer", "\n\n所以", "\n\nThus"]
+
+                # Extended pattern list covering more models (especially Sonnet)
+                patterns = [
+                    # Original patterns
+                    "\n\n在", "\n\nThe", "\n\n回答", "\n\nAnswer", "\n\n所以", "\n\nThus",
+                    # New English patterns (Sonnet common)
+                    "\n\nLet me", "\n\nI'll", "\n\nI will", "\n\nTo", "\n\nBased", "\n\nHere",
+                    "\n\nFirst", "\n\nNext", "\n\nFinally", "\n\nIn conclusion",
+                    # Thinking markers
+                    "\n\nThinking", "\n\nReasoning", "\n\nAnalysis",
+                    # New Chinese patterns
+                    "\n\n让我", "\n\n根据", "\n\n分析", "\n\n首先", "\n\n其次", "\n\n最后",
+                    "\n\n综上所述", "\n\n因此",
+                ]
 
                 for pattern in patterns:
                     if pattern in thinking_text:
                         parts = thinking_text.split(pattern, 1)
-                        if len(parts) > 1 and len(parts[1]) > 3:  # 确保分割后有实质内容
+                        if len(parts) > 1 and len(parts[1]) > 3:
                             overflow_split = (parts[0], pattern + parts[1])
                             break
 
+                # If simple patterns didn't detect, try regex semantic detection
+                if not overflow_split:
+                    import re
+                    semantic_patterns = [
+                        r"\n\n\d+\.\s",
+                        r"\n\n[-•*]\s",
+                        r"\n\n(?:Answer|Response|Conclusion|Result):",
+                    ]
+
+                    for semantic_pattern in semantic_patterns:
+                        match = re.search(semantic_pattern, thinking_text)
+                        if match:
+                            split_pos = match.start()
+                            if split_pos > 20:
+                                overflow_split = (thinking_text[:split_pos], thinking_text[split_pos:])
+                                break
+
+                # Fallback: for long text (>500 chars) split at second-to-last \n\n
+                if not overflow_split and len(thinking_text) > 500:
+                    paragraph_count = thinking_text.count("\n\n")
+                    if paragraph_count >= 2:
+                        last_split = thinking_text.rfind("\n\n", 0, -1)
+                        second_last_split = thinking_text.rfind("\n\n", 0, last_split)
+                        if second_last_split > 0:
+                            overflow_split = (thinking_text[:second_last_split], thinking_text[second_last_split:])
+
                 if overflow_split:
-                    # 只输出思考部分，丢弃正文部分
                     pure_thinking, overflow_content = overflow_split
                     logger.debug(
                         "Thinking content overflow detected and split",
@@ -931,11 +1012,23 @@ def parse_stream(response: requests.Response) -> Generator[dict[str, Any], None,
                                 "thinking_length": len(pure_thinking),
                                 "overflow_length": len(overflow_content),
                                 "overflow_preview": overflow_content[:100] if len(overflow_content) > 100 else overflow_content,
+                                "detection_method": "pattern" if any(p in thinking_text for p in patterns[:6]) else "enhanced",
                             }
                         },
                     )
                     yield {"type": "thinking", "text": pure_thinking}
                 else:
+                    logger.debug(
+                        "Thinking segment processed without overflow detection",
+                        extra={
+                            "request_info": {
+                                "event": "thinking_segment_processed",
+                                "thinking_length": len(thinking_text),
+                                "overflow_detected": False,
+                                "paragraph_count": thinking_text.count("\n\n"),
+                            }
+                        },
+                    )
                     yield {"type": "thinking", "text": thinking_text}
             else:
                 yield {"type": "content", "text": cleaned}
