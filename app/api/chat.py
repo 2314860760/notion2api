@@ -293,28 +293,6 @@ def _build_thinking_replacement(
     }
 
 
-
-    normalized_final = _normalize_overlap_text(final_reply)
-    normalized_streamed = _normalize_overlap_text(streamed_content_text)
-    if not normalized_final or not _normalize_overlap_text(thinking_text):
-        return None
-
-    # 只在几乎没有真实正文增量时做裁决，避免误伤复杂推理场景。
-    if normalized_streamed and len(normalized_streamed) >= max(10, int(len(normalized_final) * 0.35)):
-        return None
-
-    replacement, decision, overlap_ratio = _trim_redundant_thinking(thinking_text, final_reply)
-    if replacement == str(thinking_text or "").strip():
-        return None
-
-    return {
-        "thinking": replacement,
-        "decision": decision,
-        "overlap_ratio": round(overlap_ratio, 4),
-        "source_type": source,
-    }
-
-
 def _contains_recall_intent(text: str) -> bool:
     lowered = text.lower()
     for keyword in RECALL_INTENT_KEYWORDS:
@@ -1271,8 +1249,8 @@ async def create_chat_completion(
                                 thinking_accumulator += thinking_text
                                 # Track recent thinking for overlap detection
                                 recent_thinking_buffer.append(thinking_text)
-                                # Keep buffer manageable (max 5 recent chunks)
-                                if len(recent_thinking_buffer) > 5:
+                                # Keep buffer manageable (max 40 recent chunks)
+                                if len(recent_thinking_buffer) > 40:
                                     recent_thinking_buffer.pop(0)
                                 
                                 if not assistant_started:
@@ -1300,13 +1278,19 @@ async def create_chat_completion(
 
                         # Check if content overlaps with recent thinking (prevents thinking leakage)
                         if recent_thinking_buffer and chunk_text.strip():
-                            combined_recent_thinking = " ".join(recent_thinking_buffer)
+                            combined_recent_thinking = "".join(recent_thinking_buffer)
                             chunk_normalized = chunk_text.strip()
                             
+                            # Use normalized text without spaces for robust comparison
+                            combined_norm = re.sub(r"\s+", "", combined_recent_thinking)
+                            chunk_norm = re.sub(r"\s+", "", chunk_normalized)
+
                             # Check for significant overlap - skip duplicate content
-                            if (chunk_normalized in combined_recent_thinking or 
-                                combined_recent_thinking.find(chunk_normalized) != -1 or
-                                (len(chunk_normalized) > 20 and chunk_normalized[:20] in combined_recent_thinking)):
+                            # We only skip if a sufficiently long chunk matches to avoid swallowing short common characters.
+                            if chunk_norm and len(chunk_norm) > 3 and (
+                                chunk_norm in combined_norm or
+                                (len(chunk_norm) > 10 and chunk_norm[:10] in combined_norm)
+                            ):
                                 # Skip this chunk as it's likely duplicated thinking content
                                 logger.debug(
                                     "Skipping duplicate content chunk that overlaps with thinking",
