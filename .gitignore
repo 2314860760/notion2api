@@ -65,3 +65,7 @@ docker-compose.override.yml
 # Local cleanup folder
 0311_cleanup/
 
+
+# Allow committed compatibility tests
+!tests/
+!tests/test_chat_stream_compat.py

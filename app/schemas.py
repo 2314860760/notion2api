@@ -55,6 +55,7 @@ class ChatCompletionResponse(BaseModel):
 class ChatCompletionChunkDelta(BaseModel):
     """SSE Delta Block"""
     content: Optional[str] = None
+    reasoning_content: Optional[str] = None
     role: Optional[str] = None
 
 class ChatCompletionChunkChoice(BaseModel):

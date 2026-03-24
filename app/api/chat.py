@@ -86,6 +86,40 @@ def _build_local_ui_chunk(
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _is_web_client_type(client_type: str) -> bool:
+    return str(client_type or "").strip().lower() == "web"
+
+
+def _get_request_client_type(request: Request) -> str:
+    return str(request.headers.get("X-Client-Type", "") or "").strip().lower()
+
+
+def _dump_model_exclude_none(payload: Any) -> dict[str, Any]:
+    if hasattr(payload, "model_dump"):
+        return payload.model_dump(exclude_none=True)
+    if hasattr(payload, "dict"):
+        return payload.dict(exclude_none=True)
+    raise TypeError(f"Unsupported payload type for serialization: {type(payload)!r}")
+
+
+def _build_search_metadata_payload(search_results: list[dict[str, Any]]) -> dict[str, Any] | None:
+    all_queries: list[Any] = []
+    all_sources: list[Any] = []
+    for result in search_results:
+        if not isinstance(result, dict):
+            continue
+        all_queries.extend(result.get("queries", []))
+        all_sources.extend(result.get("sources", []))
+
+    if not all_queries and not all_sources:
+        return None
+
+    return {
+        "queries": all_queries,
+        "sources": all_sources,
+    }
+
+
 def _format_search_results_md(search_data: dict[str, Any]) -> str:
     """将搜索数据格式化为 Markdown 引用块，以便标准客户端显示。"""
     lines = []
@@ -491,15 +525,14 @@ def _create_standard_stream_generator(
     model_name: str,
     first_item: Any,
     stream_gen: Iterable[Any],
+    client_type: str = "",
 ) -> Generator[str, None, None]:
     """
-    Standard 模式流式生成器：使用前端定义的 SSE 事件类型
+    Standard 模式流式生成器。
 
-    前端协议：
-    - thinking_chunk: 流式思考片段
-    - thinking_replace: 完整思考替换
-    - search_metadata: 搜索结果
-    - choices[0].delta.content: 正文内容
+    - Web 前端：继续使用自定义 SSE 事件（thinking_chunk / search_metadata）。
+    - 通用 OpenAI 客户端：仅输出标准 chat.completion.chunk 形状，
+      避免把顶层自定义事件发给严格校验的客户端（如 Chatbox）。
     """
     streamed_content_accumulator = ""
     streamed_thinking_accumulator = ""
@@ -508,6 +541,8 @@ def _create_standard_stream_generator(
     authoritative_final_content = ""
     authoritative_final_source_type = ""
     assistant_started = False
+    pending_search_md = ""
+    is_web_client = _is_web_client_type(client_type)
 
     try:
         for raw_item in _iter_stream_items(first_item, stream_gen):
@@ -521,35 +556,59 @@ def _create_standard_stream_generator(
                     authoritative_final_source_type = str(item.get("source_type", "") or "")
                 continue
 
-            # Standard 模式：处理 thinking（使用前端定义的 thinking_chunk 类型）
+            # Standard 模式：处理 thinking
             if item_type == "thinking":
                 thinking_text = item.get("text", "")
                 if thinking_text:
                     streamed_thinking_accumulator += thinking_text
-                    # 输出 thinking_chunk 事件
-                    yield f"data: {json.dumps({'type': 'thinking_chunk', 'text': thinking_text}, ensure_ascii=False)}\n\n"
+                    if is_web_client:
+                        # Web 前端仍使用专用 thinking 面板事件
+                        yield f"data: {json.dumps({'type': 'thinking_chunk', 'text': thinking_text}, ensure_ascii=False)}\n\n"
+                    else:
+                        # 非 Web 客户端只接收标准 chunk 形状，避免顶层自定义事件导致校验失败
+                        if not assistant_started:
+                            assistant_started = True
+                            yield _build_stream_chunk(
+                                response_id,
+                                model_name,
+                                role="assistant",
+                                thinking=thinking_text,
+                            )
+                        else:
+                            yield _build_stream_chunk(
+                                response_id,
+                                model_name,
+                                thinking=thinking_text,
+                            )
                 continue
 
-            # Standard 模式：处理 search（收集起来，最后输出）
+            # Standard 模式：处理 search
             if item_type == "search":
                 search_data = item.get("data", {})
-                if isinstance(search_data, dict):
-                    # 提取 queries 和 sources
-                    queries = search_data.get("queries", [])
-                    sources = search_data.get("sources", [])
+                if isinstance(search_data, dict) and search_data:
+                    if is_web_client:
+                        # Web 前端接收自定义搜索元数据事件
+                        queries = search_data.get("queries", [])
+                        sources = search_data.get("sources", [])
 
-                    if queries:
-                        collected_search_queries.extend(queries)
-                    if sources:
-                        collected_search_sources.extend(sources)
+                        if queries:
+                            collected_search_queries.extend(queries)
+                        if sources:
+                            collected_search_sources.extend(sources)
+                    else:
+                        pending_search_md += _format_search_results_md(search_data)
                 continue
 
             if item_type != "content":
                 continue
 
             chunk_text = item.get("text", "")
-            if not chunk_text:
+            if not chunk_text and not pending_search_md:
                 continue
+
+            if pending_search_md and not is_web_client:
+                chunk_text = pending_search_md + chunk_text
+                pending_search_md = ""
 
             streamed_content_accumulator += chunk_text
 
@@ -605,6 +664,9 @@ def _create_standard_stream_generator(
         # 发送缺失的后缀（如果有）
         missing_suffix = _compute_missing_suffix(streamed_content_accumulator, final_reply)
         if missing_suffix:
+            if pending_search_md and not is_web_client and not streamed_content_accumulator:
+                missing_suffix = pending_search_md + missing_suffix
+                pending_search_md = ""
             if not assistant_started:
                 assistant_started = True
                 yield _build_stream_chunk(
@@ -619,6 +681,9 @@ def _create_standard_stream_generator(
         elif final_reply != streamed_content_accumulator:
             # 处理分叉内容（使用最终内容）
             if not streamed_content_accumulator and final_reply:
+                if pending_search_md and not is_web_client:
+                    final_reply = pending_search_md + final_reply
+                    pending_search_md = ""
                 if not assistant_started:
                     assistant_started = True
                     yield _build_stream_chunk(
@@ -631,8 +696,8 @@ def _create_standard_stream_generator(
                     yield _build_stream_chunk(response_id, model_name, content=final_reply)
                 streamed_content_accumulator = final_reply
 
-        # 输出搜索结果（使用前端定义的 search_metadata 类型）
-        if collected_search_sources or collected_search_queries:
+        # 仅对 Web 前端输出自定义 search_metadata 事件
+        if is_web_client and (collected_search_sources or collected_search_queries):
             search_metadata = {
                 "type": "search_metadata",
                 "searches": {
@@ -904,6 +969,8 @@ async def _handle_standard_request(
 
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     max_retries = min(3, len(pool.clients))
+    client_type = _get_request_client_type(request)
+    is_web_client = _is_web_client_type(client_type)
 
     for attempt in range(1, max_retries + 1):
         client = None
@@ -916,7 +983,7 @@ async def _handle_standard_request(
                 "user_id": client.user_id,
                 "space_id": client.space_id,
             }
-            messages = [msg.dict() for msg in req_body.messages]
+            messages = [_dump_model_exclude_none(msg) for msg in req_body.messages]
             transcript = build_standard_transcript(messages, req_body.model, account)
 
             # 调用 Notion API（不使用 thread_id，让 Notion ��动处理）
@@ -939,6 +1006,7 @@ async def _handle_standard_request(
                         req_body.model,
                         first_item,
                         stream_gen,
+                        client_type=client_type,
                     ),
                     media_type="text/event-stream",
                     headers=stream_headers,
@@ -997,8 +1065,8 @@ async def _handle_standard_request(
             # 构建响应
             response_message = ChatMessage(role="assistant", content=response_text)
 
-            # 如果有 thinking，添加到扩展字段（前端会读取）
-            if thinking_parts:
+            # 仅 Web 前端返回扩展 thinking 字段
+            if is_web_client and thinking_parts:
                 response_message.thinking = "".join(thinking_parts)
 
             # 构建响应
@@ -1010,24 +1078,13 @@ async def _handle_standard_request(
                 ],
             )
 
-            # 如果有搜索结果，添加到扩展字段（前端会读取）
-            if search_results:
-                # 提取 queries 和 sources
-                all_queries = []
-                all_sources = []
-                for result in search_results:
-                    if isinstance(result, dict):
-                        all_queries.extend(result.get("queries", []))
-                        all_sources.extend(result.get("sources", []))
+            # 仅 Web 前端返回扩展 search_metadata 字段
+            if is_web_client:
+                search_metadata = _build_search_metadata_payload(search_results)
+                if search_metadata is not None:
+                    response_obj.search_metadata = search_metadata
 
-                if all_queries or all_sources:
-                    # 添加到自定义字段
-                    response_obj.search_metadata = {
-                        "queries": all_queries,
-                        "sources": all_sources
-                    }
-
-            return response_obj
+            return JSONResponse(content=_dump_model_exclude_none(response_obj))
 
         except NotionUpstreamError as exc:
             if client is not None and exc.retriable:
@@ -1179,6 +1236,8 @@ async def create_chat_completion(
 
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     max_retries = min(3, len(pool.clients))
+    client_type = _get_request_client_type(request)
+    is_web_client = _is_web_client_type(client_type)
 
     for attempt in range(1, max_retries + 1):
         client = None
@@ -1215,7 +1274,6 @@ async def create_chat_completion(
                 authoritative_final_source_type = ""
                 assistant_started = False
                 pending_search_md = ""
-                client_type = request.headers.get("X-Client-Type", "").lower()
                 recent_thinking_buffer: list[str] = []
 
                 try:
@@ -1227,7 +1285,7 @@ async def create_chat_completion(
                             search_data = item.get("data")
                             if isinstance(search_data, dict) and search_data:
                                 pending_search_md += _format_search_results_md(search_data)
-                                if client_type == "web":
+                                if is_web_client:
                                     yield _build_local_ui_chunk(
                                         response_id,
                                         req_body.model,
@@ -1305,7 +1363,7 @@ async def create_chat_completion(
                                 continue
 
                         # 在第一个正文内容发出前，把积攒的搜索信息拼上去
-                        if pending_search_md and client_type != "web":
+                        if pending_search_md and not is_web_client:
                             chunk_text = pending_search_md + chunk_text
                         
                         if pending_search_md:
@@ -1384,7 +1442,7 @@ async def create_chat_completion(
                     missing_suffix = _compute_missing_suffix(streamed_content_accumulator, final_reply)
                     if missing_suffix:
                         suffix_to_emit = missing_suffix
-                        if pending_search_md and client_type != "web" and not streamed_content_accumulator:
+                        if pending_search_md and not is_web_client and not streamed_content_accumulator:
                             suffix_to_emit = pending_search_md + suffix_to_emit
                             pending_search_md = ""
                         if not assistant_started:
@@ -1401,7 +1459,7 @@ async def create_chat_completion(
                     elif final_reply != streamed_content_accumulator:
                         # Diverged bodies cannot be safely "patched" in plain OpenAI deltas.
                         # Web client supports replace event to keep rendered body aligned with persisted final reply.
-                        if client_type == "web":
+                        if is_web_client:
                             yield _build_local_ui_chunk(
                                 response_id,
                                 req_body.model,
@@ -1414,7 +1472,7 @@ async def create_chat_completion(
                         elif not streamed_content_accumulator and final_reply:
                             # Non-web fallback when nothing has been shown yet.
                             emit_text = final_reply
-                            if pending_search_md and client_type != "web":
+                            if pending_search_md and not is_web_client:
                                 emit_text = pending_search_md + emit_text
                                 pending_search_md = ""
                             if not assistant_started:
@@ -1435,7 +1493,7 @@ async def create_chat_completion(
                         final_reply,
                         authoritative_final_source_type,
                     )
-                    if client_type == "web" and thinking_replacement is not None:
+                    if is_web_client and thinking_replacement is not None:
                         yield _build_local_ui_chunk(
                             response_id,
                             req_body.model,
@@ -1492,6 +1550,7 @@ async def create_chat_completion(
 
             content_parts: list[str] = []
             thinking_parts: list[str] = []
+            search_results: list[dict[str, Any]] = []
             authoritative_final_content = ""
             authoritative_final_source_type = ""
             for raw_item in _iter_stream_items(first_item, stream_gen):
@@ -1507,6 +1566,11 @@ async def create_chat_completion(
                     thinking_text = str(item.get("text", "") or "")
                     if thinking_text:
                         thinking_parts.append(thinking_text)
+                    continue
+                if item_type == "search":
+                    search_data = item.get("data", {})
+                    if isinstance(search_data, dict) and search_data:
+                        search_results.append(search_data)
                     continue
                 if item_type != "content":
                     continue
@@ -1531,19 +1595,33 @@ async def create_chat_completion(
                 full_text,
                 merged_thinking,
             )
-            response.headers["X-Conversation-Id"] = conversation_id
-            if memory_degraded:
-                response.headers["X-Memory-Status"] = "degraded"
 
             response_text = full_text if full_text.strip() else "[assistant_no_visible_content]"
-            return ChatCompletionResponse(
+            response_message = ChatMessage(role="assistant", content=response_text)
+            if is_web_client and merged_thinking:
+                response_message.thinking = merged_thinking
+
+            response_obj = ChatCompletionResponse(
                 id=response_id,
                 model=req_body.model,
                 choices=[
                     ChatMessageResponseChoice(
-                        message=ChatMessage(role="assistant", content=response_text)
+                        message=response_message
                     )
                 ],
+            )
+
+            if is_web_client:
+                search_metadata = _build_search_metadata_payload(search_results)
+                if search_metadata is not None:
+                    response_obj.search_metadata = search_metadata
+
+            response_headers = {"X-Conversation-Id": conversation_id}
+            if memory_degraded:
+                response_headers["X-Memory-Status"] = "degraded"
+            return JSONResponse(
+                content=_dump_model_exclude_none(response_obj),
+                headers=response_headers,
             )
         except NotionUpstreamError as exc:
             if client is not None and exc.retriable:
