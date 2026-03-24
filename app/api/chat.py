@@ -120,6 +120,123 @@ def _build_search_metadata_payload(search_results: list[dict[str, Any]]) -> dict
     }
 
 
+def _emit_reasoning_chunk(
+    response_id: str,
+    model: str,
+    thinking_text: str,
+    *,
+    assistant_started: bool,
+) -> tuple[bool, str | None]:
+    thinking_text = str(thinking_text or "")
+    if not thinking_text:
+        return assistant_started, None
+
+    if not assistant_started:
+        assistant_started = True
+        return assistant_started, _build_stream_chunk(
+            response_id,
+            model,
+            role="assistant",
+            thinking=thinking_text,
+        )
+
+    return assistant_started, _build_stream_chunk(
+        response_id,
+        model,
+        thinking=thinking_text,
+    )
+
+
+_REASONING_LEAK_STRONG_MARKERS = (
+    "user is asking",
+    "the user is asking",
+    "i need to",
+    "i should",
+    "system instructions",
+    "previous response",
+    "out of character",
+    "prompt injection",
+)
+
+_REASONING_LEAK_WEAK_MARKERS = (
+    "i'm currently",
+    "i am currently",
+    "i'm focusing",
+    "i am focusing",
+    "my goal is",
+    "let me",
+    "i will",
+    "i'll",
+    "i want to",
+    "i need to address",
+    "i should respond",
+    "i should acknowledge",
+)
+
+
+def _looks_like_reasoning_leak_prefix(text: str) -> bool:
+    lowered = str(text or "").lstrip().lower()
+    if not lowered:
+        return False
+
+    head = lowered[:1200]
+    if any(marker in head for marker in _REASONING_LEAK_STRONG_MARKERS):
+        return True
+
+    weak_hits = sum(1 for marker in _REASONING_LEAK_WEAK_MARKERS if marker in head)
+    return weak_hits >= 2
+
+
+def _find_answer_start_index(text: str) -> int | None:
+    if not text:
+        return None
+
+    patterns = [
+        re.compile(r"(?<=[.!?。！？])\s*(?=[\u4e00-\u9fff])"),
+        re.compile(
+            r"(?<=[.!?。！？])\s*(?=(?:是的|当然|好的|没错|完全同意|我同意|可以|不能|你好|总之|总结来说|简而言之|"
+            r"yes\b|no\b|sure\b|absolutely\b|certainly\b|here(?:'|’)s\b|in short\b|to answer\b|the short answer\b))",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\n\n(?=(?:是的|当然|好的|没错|完全同意|我同意|可以|不能|你好|总之|总结来说|简而言之|"
+            r"yes\b|no\b|sure\b|absolutely\b|certainly\b|here(?:'|’)s\b|in short\b|to answer\b|the short answer\b))",
+            re.IGNORECASE,
+        ),
+    ]
+
+    candidates: list[int] = []
+    for pattern in patterns:
+        match = pattern.search(text)
+        if match and match.start() >= 20:
+            candidates.append(match.start())
+
+    if not candidates:
+        return None
+    return min(candidates)
+
+
+def _split_leading_reasoning_leak(text: str, *, force_flush: bool = False) -> tuple[str, str, bool]:
+    raw = str(text or "")
+    if not raw:
+        return "", "", False
+
+    if not _looks_like_reasoning_leak_prefix(raw):
+        return "", raw, False
+
+    split_idx = _find_answer_start_index(raw)
+    if split_idx is not None:
+        reasoning_prefix = raw[:split_idx].rstrip()
+        content_remainder = raw[split_idx:].lstrip()
+        if reasoning_prefix and content_remainder:
+            return reasoning_prefix, content_remainder, False
+
+    if force_flush or len(raw) >= 600:
+        return raw, "", False
+
+    return "", "", True
+
+
 def _format_search_results_md(search_data: dict[str, Any]) -> str:
     """将搜索数据格式化为 Markdown 引用块，以便标准客户端显示。"""
     lines = []
@@ -541,7 +658,8 @@ def _create_standard_stream_generator(
     authoritative_final_content = ""
     authoritative_final_source_type = ""
     assistant_started = False
-    pending_search_md = ""
+    content_started = False
+    leading_content_buffer = ""
     is_web_client = _is_web_client_type(client_type)
 
     try:
@@ -596,19 +714,54 @@ def _create_standard_stream_generator(
                         if sources:
                             collected_search_sources.extend(sources)
                     else:
-                        pending_search_md += _format_search_results_md(search_data)
+                        search_reasoning = _format_search_results_md(search_data)
+                        if search_reasoning:
+                            streamed_thinking_accumulator += search_reasoning
+                            assistant_started, reasoning_chunk = _emit_reasoning_chunk(
+                                response_id,
+                                model_name,
+                                search_reasoning,
+                                assistant_started=assistant_started,
+                            )
+                            if reasoning_chunk is not None:
+                                yield reasoning_chunk
                 continue
 
             if item_type != "content":
                 continue
 
             chunk_text = item.get("text", "")
-            if not chunk_text and not pending_search_md:
+            if not chunk_text:
                 continue
 
-            if pending_search_md and not is_web_client:
-                chunk_text = pending_search_md + chunk_text
-                pending_search_md = ""
+            if not is_web_client and not content_started:
+                leading_content_buffer += chunk_text
+                leaked_reasoning, visible_content, should_wait = _split_leading_reasoning_leak(leading_content_buffer)
+                if should_wait:
+                    continue
+                if leaked_reasoning:
+                    streamed_thinking_accumulator += leaked_reasoning
+                    if not assistant_started:
+                        assistant_started = True
+                        yield _build_stream_chunk(
+                            response_id,
+                            model_name,
+                            role="assistant",
+                            thinking=leaked_reasoning,
+                        )
+                    else:
+                        yield _build_stream_chunk(
+                            response_id,
+                            model_name,
+                            thinking=leaked_reasoning,
+                        )
+                leading_content_buffer = ""
+                chunk_text = visible_content
+                if not chunk_text:
+                    continue
+                content_started = True
+            elif not is_web_client:
+                content_started = True
 
             streamed_content_accumulator += chunk_text
 
@@ -654,6 +807,42 @@ def _create_standard_stream_generator(
         else:
             yield _build_stream_chunk(response_id, model_name, content=error_hint)
     finally:
+        if not is_web_client and leading_content_buffer:
+            leaked_reasoning, buffered_content, _ = _split_leading_reasoning_leak(
+                leading_content_buffer,
+                force_flush=True,
+            )
+            if leaked_reasoning:
+                streamed_thinking_accumulator += leaked_reasoning
+                if not assistant_started:
+                    assistant_started = True
+                    yield _build_stream_chunk(
+                        response_id,
+                        model_name,
+                        role="assistant",
+                        thinking=leaked_reasoning,
+                    )
+                else:
+                    yield _build_stream_chunk(
+                        response_id,
+                        model_name,
+                        thinking=leaked_reasoning,
+                    )
+            if buffered_content:
+                streamed_content_accumulator += buffered_content
+                if not assistant_started:
+                    assistant_started = True
+                    yield _build_stream_chunk(
+                        response_id,
+                        model_name,
+                        role="assistant",
+                        content=buffered_content,
+                    )
+                else:
+                    yield _build_stream_chunk(response_id, model_name, content=buffered_content)
+                content_started = True
+            leading_content_buffer = ""
+
         # 选择最佳最终回复
         final_reply, _ = _select_best_final_reply(
             streamed_content_accumulator,
@@ -664,9 +853,6 @@ def _create_standard_stream_generator(
         # 发送缺失的后缀（如果有）
         missing_suffix = _compute_missing_suffix(streamed_content_accumulator, final_reply)
         if missing_suffix:
-            if pending_search_md and not is_web_client and not streamed_content_accumulator:
-                missing_suffix = pending_search_md + missing_suffix
-                pending_search_md = ""
             if not assistant_started:
                 assistant_started = True
                 yield _build_stream_chunk(
@@ -681,9 +867,6 @@ def _create_standard_stream_generator(
         elif final_reply != streamed_content_accumulator:
             # 处理分叉内容（使用最终内容）
             if not streamed_content_accumulator and final_reply:
-                if pending_search_md and not is_web_client:
-                    final_reply = pending_search_md + final_reply
-                    pending_search_md = ""
                 if not assistant_started:
                     assistant_started = True
                     yield _build_stream_chunk(
@@ -1056,6 +1239,10 @@ async def _handle_standard_request(
                 authoritative_final_content,
                 authoritative_final_source_type,
             )
+            if not is_web_client:
+                _, cleaned_full_text, _ = _split_leading_reasoning_leak(full_text, force_flush=True)
+                if cleaned_full_text:
+                    full_text = cleaned_full_text
 
             if not full_text.strip():
                 raise NotionUpstreamError("Notion upstream returned empty content.", retriable=True)
@@ -1273,7 +1460,8 @@ async def create_chat_completion(
                 authoritative_final_content = ""
                 authoritative_final_source_type = ""
                 assistant_started = False
-                pending_search_md = ""
+                content_started = False
+                leading_content_buffer = ""
                 recent_thinking_buffer: list[str] = []
 
                 try:
@@ -1284,7 +1472,6 @@ async def create_chat_completion(
                         if item_type == "search":
                             search_data = item.get("data")
                             if isinstance(search_data, dict) and search_data:
-                                pending_search_md += _format_search_results_md(search_data)
                                 if is_web_client:
                                     yield _build_local_ui_chunk(
                                         response_id,
@@ -1292,6 +1479,21 @@ async def create_chat_completion(
                                         "search_metadata",
                                         searches=search_data,
                                     )
+                                else:
+                                    search_reasoning = _format_search_results_md(search_data)
+                                    if search_reasoning:
+                                        thinking_accumulator += search_reasoning
+                                        recent_thinking_buffer.append(search_reasoning)
+                                        if len(recent_thinking_buffer) > 40:
+                                            recent_thinking_buffer.pop(0)
+                                        assistant_started, reasoning_chunk = _emit_reasoning_chunk(
+                                            response_id,
+                                            req_body.model,
+                                            search_reasoning,
+                                            assistant_started=assistant_started,
+                                        )
+                                        if reasoning_chunk is not None:
+                                            yield reasoning_chunk
                             continue
 
                         if item_type == "final_content":
@@ -1331,8 +1533,44 @@ async def create_chat_completion(
                             continue
 
                         chunk_text = item.get("text", "")
-                        if not chunk_text and not pending_search_md:
+                        if not chunk_text:
                             continue
+
+                        if not is_web_client and not content_started:
+                            leading_content_buffer += chunk_text
+                            leaked_reasoning, visible_content, should_wait = _split_leading_reasoning_leak(
+                                leading_content_buffer
+                            )
+                            if should_wait:
+                                continue
+                            if leaked_reasoning:
+                                thinking_accumulator += leaked_reasoning
+                                recent_thinking_buffer.append(leaked_reasoning)
+                                if len(recent_thinking_buffer) > 40:
+                                    recent_thinking_buffer.pop(0)
+
+                                if not assistant_started:
+                                    assistant_started = True
+                                    yield _build_stream_chunk(
+                                        response_id,
+                                        req_body.model,
+                                        role="assistant",
+                                        thinking=leaked_reasoning,
+                                    )
+                                else:
+                                    yield _build_stream_chunk(
+                                        response_id,
+                                        req_body.model,
+                                        thinking=leaked_reasoning,
+                                    )
+
+                            leading_content_buffer = ""
+                            chunk_text = visible_content
+                            if not chunk_text:
+                                continue
+                            content_started = True
+                        elif not is_web_client:
+                            content_started = True
 
                         # Check if content overlaps with recent thinking (prevents thinking leakage)
                         if recent_thinking_buffer and chunk_text.strip():
@@ -1361,13 +1599,6 @@ async def create_chat_completion(
                                     },
                                 )
                                 continue
-
-                        # 在第一个正文内容发出前，把积攒的搜索信息拼上去
-                        if pending_search_md and not is_web_client:
-                            chunk_text = pending_search_md + chunk_text
-                        
-                        if pending_search_md:
-                            pending_search_md = ""
 
                         streamed_content_accumulator += chunk_text
                         if not assistant_started:
@@ -1433,6 +1664,48 @@ async def create_chat_completion(
                     else:
                         yield _build_stream_chunk(response_id, req_body.model, content=error_hint)
                 finally:
+                    if not is_web_client and leading_content_buffer:
+                        leaked_reasoning, buffered_content, _ = _split_leading_reasoning_leak(
+                            leading_content_buffer,
+                            force_flush=True,
+                        )
+                        if leaked_reasoning:
+                            thinking_accumulator += leaked_reasoning
+                            recent_thinking_buffer.append(leaked_reasoning)
+                            if len(recent_thinking_buffer) > 40:
+                                recent_thinking_buffer.pop(0)
+
+                            if not assistant_started:
+                                assistant_started = True
+                                yield _build_stream_chunk(
+                                    response_id,
+                                    req_body.model,
+                                    role="assistant",
+                                    thinking=leaked_reasoning,
+                                )
+                            else:
+                                yield _build_stream_chunk(
+                                    response_id,
+                                    req_body.model,
+                                    thinking=leaked_reasoning,
+                                )
+
+                        if buffered_content:
+                            streamed_content_accumulator += buffered_content
+                            if not assistant_started:
+                                assistant_started = True
+                                yield _build_stream_chunk(
+                                    response_id,
+                                    req_body.model,
+                                    role="assistant",
+                                    content=buffered_content,
+                                )
+                            else:
+                                yield _build_stream_chunk(response_id, req_body.model, content=buffered_content)
+                            content_started = True
+
+                        leading_content_buffer = ""
+
                     final_reply, reply_decision = _select_best_final_reply(
                         streamed_content_accumulator,
                         authoritative_final_content,
@@ -1442,9 +1715,6 @@ async def create_chat_completion(
                     missing_suffix = _compute_missing_suffix(streamed_content_accumulator, final_reply)
                     if missing_suffix:
                         suffix_to_emit = missing_suffix
-                        if pending_search_md and not is_web_client and not streamed_content_accumulator:
-                            suffix_to_emit = pending_search_md + suffix_to_emit
-                            pending_search_md = ""
                         if not assistant_started:
                             assistant_started = True
                             yield _build_stream_chunk(
@@ -1472,9 +1742,6 @@ async def create_chat_completion(
                         elif not streamed_content_accumulator and final_reply:
                             # Non-web fallback when nothing has been shown yet.
                             emit_text = final_reply
-                            if pending_search_md and not is_web_client:
-                                emit_text = pending_search_md + emit_text
-                                pending_search_md = ""
                             if not assistant_started:
                                 assistant_started = True
                                 yield _build_stream_chunk(
@@ -1583,6 +1850,10 @@ async def create_chat_completion(
                 authoritative_final_content,
                 authoritative_final_source_type,
             )
+            if not is_web_client:
+                _, cleaned_full_text, _ = _split_leading_reasoning_leak(full_text, force_flush=True)
+                if cleaned_full_text:
+                    full_text = cleaned_full_text
             merged_thinking = "".join(thinking_parts).strip()
             if not full_text.strip() and not merged_thinking:
                 raise NotionUpstreamError("Notion upstream returned empty content.", retriable=True)

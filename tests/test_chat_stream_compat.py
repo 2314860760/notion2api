@@ -143,10 +143,22 @@ def test_standard_stream_non_web_uses_reasoning_content_and_standard_chunks():
     assert events[-1] == "[DONE]"
 
     payloads = [event for event in events if isinstance(event, dict)]
-    assert payloads[0]["choices"][0]["delta"]["reasoning_content"] == "思考片段"
+    reasoning_chunks = [
+        payload["choices"][0]["delta"].get("reasoning_content", "")
+        for payload in payloads
+        if payload["choices"][0]["delta"].get("reasoning_content")
+    ]
+    content_chunks = [
+        payload["choices"][0]["delta"].get("content", "")
+        for payload in payloads
+        if payload["choices"][0]["delta"].get("content")
+    ]
+
     assert payloads[0]["choices"][0]["delta"]["role"] == "assistant"
-    assert payloads[1]["choices"][0]["delta"]["content"].startswith("> 🔍 **已搜索:** reasoning")
-    assert payloads[1]["choices"][0]["delta"]["content"].endswith("正式答案")
+    assert any(chunk == "思考片段" for chunk in reasoning_chunks)
+    assert any(chunk.startswith("> 🔍 **已搜索:** reasoning") for chunk in reasoning_chunks)
+    assert any("> 🌐 **来源:**" in chunk for chunk in reasoning_chunks)
+    assert "".join(content_chunks) == "正式答案"
     assert payloads[-1]["choices"][0]["finish_reason"] == "stop"
     assert all("type" not in payload for payload in payloads)
 
@@ -299,8 +311,114 @@ def test_heavy_stream_non_web_avoids_custom_events_and_keeps_reasoning(monkeypat
     stream_text = asyncio.run(_collect_streaming_response(result))
     events = _parse_sse_events(stream_text)
     payloads = [event for event in events if isinstance(event, dict)]
+    reasoning_chunks = [
+        payload["choices"][0]["delta"].get("reasoning_content", "")
+        for payload in payloads
+        if payload["choices"][0]["delta"].get("reasoning_content")
+    ]
 
     assert events[-1] == "[DONE]"
-    assert any(payload["choices"][0]["delta"].get("reasoning_content") == "思考片段" for payload in payloads)
+    assert any(chunk == "思考片段" for chunk in reasoning_chunks)
+    assert any(chunk.startswith("> 🔍 **已搜索:** reasoning") for chunk in reasoning_chunks)
+    assert any("> 🌐 **来源:**" in chunk for chunk in reasoning_chunks)
     assert not any(payload.get("type") in {"thinking_chunk", "search_metadata", "thinking_replace", "content_replace"} for payload in payloads)
     assert any("正式答案" in payload["choices"][0]["delta"].get("content", "") for payload in payloads)
+    assert not any("> 🔍" in payload["choices"][0]["delta"].get("content", "") for payload in payloads)
+
+
+def test_standard_stream_non_web_splits_leaked_reasoning_prefix():
+    stream_text = "".join(
+        chat_api._create_standard_stream_generator(
+            "chatcmpl-test",
+            "test-model",
+            {"type": "thinking", "text": "The"},
+            iter(
+                [
+                    {
+                        "type": "content",
+                        "text": (
+                            "user is asking me to confirm the situation.\n\n"
+                            "I should respond clearly and keep it concise."
+                            "是的，完全同意你的观点。"
+                        ),
+                    }
+                ]
+            ),
+            client_type="chatbox",
+        )
+    )
+
+    events = _parse_sse_events(stream_text)
+    payloads = [event for event in events if isinstance(event, dict)]
+    reasoning_chunks = [
+        payload["choices"][0]["delta"].get("reasoning_content", "")
+        for payload in payloads
+        if payload["choices"][0]["delta"].get("reasoning_content")
+    ]
+    content_chunks = [
+        payload["choices"][0]["delta"].get("content", "")
+        for payload in payloads
+        if payload["choices"][0]["delta"].get("content")
+    ]
+
+    assert reasoning_chunks[0] == "The"
+    assert any("user is asking me to confirm the situation." in chunk for chunk in reasoning_chunks)
+    assert all("user is asking me to confirm the situation." not in chunk for chunk in content_chunks)
+    assert "".join(content_chunks) == "是的，完全同意你的观点。"
+
+
+def test_heavy_stream_non_web_splits_leaked_reasoning_prefix(monkeypatch):
+    monkeypatch.setattr(chat_api, "is_supported_model", lambda _: True)
+    monkeypatch.setattr(app_config, "APP_MODE", "heavy", raising=False)
+
+    client = FakeClient(
+        [
+            {"type": "thinking", "text": "The"},
+            {
+                "type": "content",
+                "text": (
+                    "user is asking me to confirm the situation.\n\n"
+                    "I should respond clearly and keep it concise."
+                    "是的，完全同意你的观点。"
+                ),
+            },
+        ]
+    )
+    request = _make_request(
+        account_pool=FakePool(client),
+        conversation_manager=FakeManager(),
+    )
+    req_body = chat_api.ChatCompletionRequest(
+        model="test-model",
+        messages=[chat_api.ChatMessage(role="user", content="你好")],
+        stream=True,
+    )
+
+    result = asyncio.run(
+        chat_api.create_chat_completion(
+            request,
+            req_body,
+            BackgroundTasks(),
+            Response(),
+        )
+    )
+
+    assert isinstance(result, StreamingResponse)
+    stream_text = asyncio.run(_collect_streaming_response(result))
+    events = _parse_sse_events(stream_text)
+    payloads = [event for event in events if isinstance(event, dict)]
+    reasoning_chunks = [
+        payload["choices"][0]["delta"].get("reasoning_content", "")
+        for payload in payloads
+        if payload["choices"][0]["delta"].get("reasoning_content")
+    ]
+    content_chunks = [
+        payload["choices"][0]["delta"].get("content", "")
+        for payload in payloads
+        if payload["choices"][0]["delta"].get("content")
+    ]
+
+    assert reasoning_chunks[0] == "The"
+    assert any("user is asking me to confirm the situation." in chunk for chunk in reasoning_chunks)
+    assert all("user is asking me to confirm the situation." not in chunk for chunk in content_chunks)
+    assert "".join(content_chunks) == "是的，完全同意你的观点。"
