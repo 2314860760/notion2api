@@ -1948,20 +1948,37 @@ def build_standard_transcript(
         }
     ]
 
-    # 收集所有 system 消息
-    system_instructions = []
-    user_messages = []
+    # 先收集 system 指令，再按原始顺序重建非 system 消息，避免 user/assistant 时序被打乱
+    system_instructions = [
+        str(msg.get("content", ""))
+        for msg in messages
+        if msg.get("role") == "system"
+    ]
+    merged_system = "\n".join(system_instructions)
+    system_injected = False
 
     for msg in messages:
         role = msg.get("role")
-        content = msg.get("content", "")
+        content = str(msg.get("content", ""))
 
         if role == "system":
-            system_instructions.append(content)
-        elif role == "user":
-            user_messages.append(content)
-        elif role == "assistant":
-            # assistant 消息单独处理
+            continue
+
+        if role == "user":
+            if merged_system and not system_injected:
+                content = f"[System Instructions: {merged_system}]\n\n{content}"
+                system_injected = True
+
+            transcript.append({
+                "id": str(uuid.uuid4()),
+                "type": "user",
+                "value": [[content]],
+                "userId": account.get("user_id", ""),
+                "createdAt": datetime.now().astimezone().isoformat()
+            })
+            continue
+
+        if role == "assistant":
             transcript.append({
                 "id": str(uuid.uuid4()),
                 "type": "agent-inference",
@@ -1971,31 +1988,6 @@ def build_standard_transcript(
                         "content": content
                     }
                 ]
-            })
-
-    # 将 system 指令合并到第一条 user 消息（与 Lite/Heavy 模式保持一致）
-    if user_messages:
-        first_user_content = user_messages[0]
-        if system_instructions:
-            merged_system = "\n".join(system_instructions)
-            first_user_content = f"[System Instructions: {merged_system}]\n\n{first_user_content}"
-
-        transcript.append({
-            "id": str(uuid.uuid4()),
-            "type": "user",
-            "value": [[first_user_content]],
-            "userId": account.get("user_id", ""),
-            "createdAt": datetime.now().astimezone().isoformat()
-        })
-
-        # 添加剩余的 user 消息
-        for content in user_messages[1:]:
-            transcript.append({
-                "id": str(uuid.uuid4()),
-                "type": "user",
-                "value": [[content]],
-                "userId": account.get("user_id", ""),
-                "createdAt": datetime.now().astimezone().isoformat()
             })
 
     return transcript

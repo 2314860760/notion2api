@@ -44,6 +44,18 @@ class FakePool:
         self.failed_clients.append(client)
 
 
+class FakeCoolingPool:
+    def __init__(self, detail="Notion 账号限流中（触发官方公平使用政策），请在 9 秒后重试。"):
+        self.detail = detail
+        self.clients = [object()]
+
+    def get_client(self):
+        raise RuntimeError(self.detail)
+
+    def mark_failed(self, client):
+        raise AssertionError("mark_failed should not be called when account pool is cooling")
+
+
 class FakeManager:
     def __init__(self):
         self.thread_id = None
@@ -107,6 +119,29 @@ def _decode_json_response(response: JSONResponse):
     return json.loads(response.body.decode("utf-8"))
 
 
+def _simplify_standard_transcript(transcript):
+    simplified = []
+    for block in transcript[2:]:
+        block_type = block.get("type")
+        if block_type == "user":
+            simplified.append(
+                {
+                    "type": "user",
+                    "content": block.get("value", [[""]])[0][0],
+                }
+            )
+        elif block_type == "agent-inference":
+            simplified.append(
+                {
+                    "type": "assistant",
+                    "content": block.get("value", [{}])[0].get("content", ""),
+                }
+            )
+        else:
+            simplified.append({"type": block_type})
+    return simplified
+
+
 async def _collect_streaming_response(response: StreamingResponse) -> str:
     parts = []
     async for chunk in response.body_iterator:
@@ -161,6 +196,149 @@ def test_standard_stream_non_web_uses_reasoning_content_and_standard_chunks():
     assert "".join(content_chunks) == "正式答案"
     assert payloads[-1]["choices"][0]["finish_reason"] == "stop"
     assert all("type" not in payload for payload in payloads)
+
+
+def test_build_standard_transcript_preserves_dialogue_order_and_injects_system_once():
+    transcript = conversation_module.build_standard_transcript(
+        [
+            {"role": "system", "content": "规则A"},
+            {"role": "user", "content": "用户1"},
+            {"role": "assistant", "content": "助手1"},
+            {"role": "user", "content": "用户2"},
+            {"role": "assistant", "content": "助手2"},
+            {"role": "user", "content": "用户3"},
+        ],
+        "claude-opus4.6",
+        {"user_id": "test-user", "space_id": "test-space"},
+    )
+
+    simplified = _simplify_standard_transcript(transcript)
+    assert simplified == [
+        {"type": "user", "content": "[System Instructions: 规则A]\n\n用户1"},
+        {"type": "assistant", "content": "助手1"},
+        {"type": "user", "content": "用户2"},
+        {"type": "assistant", "content": "助手2"},
+        {"type": "user", "content": "用户3"},
+    ]
+
+
+def test_build_standard_transcript_preserves_order_without_system():
+    transcript = conversation_module.build_standard_transcript(
+        [
+            {"role": "user", "content": "用户1"},
+            {"role": "assistant", "content": "助手1"},
+            {"role": "user", "content": "用户2"},
+        ],
+        "claude-opus4.6",
+        {"user_id": "test-user", "space_id": "test-space"},
+    )
+
+    simplified = _simplify_standard_transcript(transcript)
+    assert simplified == [
+        {"type": "user", "content": "用户1"},
+        {"type": "assistant", "content": "助手1"},
+        {"type": "user", "content": "用户2"},
+    ]
+
+
+def test_build_standard_transcript_merges_multiple_system_messages_only_once():
+    transcript = conversation_module.build_standard_transcript(
+        [
+            {"role": "system", "content": "规则A"},
+            {"role": "system", "content": "规则B"},
+            {"role": "user", "content": "用户1"},
+            {"role": "assistant", "content": "助手1"},
+            {"role": "user", "content": "用户2"},
+        ],
+        "claude-opus4.6",
+        {"user_id": "test-user", "space_id": "test-space"},
+    )
+
+    simplified = _simplify_standard_transcript(transcript)
+    assert simplified[0]["content"] == "[System Instructions: 规则A\n规则B]\n\n用户1"
+    assert simplified[2]["content"] == "用户2"
+    assert simplified[2]["content"].count("System Instructions") == 0
+
+
+def test_build_standard_transcript_keeps_leading_assistant_before_first_user():
+    transcript = conversation_module.build_standard_transcript(
+        [
+            {"role": "assistant", "content": "助手开场"},
+            {"role": "system", "content": "规则A"},
+            {"role": "user", "content": "用户1"},
+            {"role": "assistant", "content": "助手2"},
+        ],
+        "claude-opus4.6",
+        {"user_id": "test-user", "space_id": "test-space"},
+    )
+
+    simplified = _simplify_standard_transcript(transcript)
+    assert simplified == [
+        {"type": "assistant", "content": "助手开场"},
+        {"type": "user", "content": "[System Instructions: 规则A]\n\n用户1"},
+        {"type": "assistant", "content": "助手2"},
+    ]
+
+
+def test_account_pool_cooling_response_uses_429_and_retry_after_header():
+    response = chat_api._build_account_pool_cooling_response(
+        "Notion 账号限流中（触发官方公平使用政策），请在 9 秒后重试。"
+    )
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "9"
+
+    payload = _decode_json_response(response)
+    assert payload["error"]["type"] == "rate_limit_error"
+    assert payload["error"]["code"] == "account_pool_cooling"
+
+
+def test_standard_request_returns_429_when_account_pool_is_cooling(monkeypatch):
+    monkeypatch.setattr(chat_api, "is_supported_model", lambda _: True)
+
+    request = _make_request(account_pool=FakeCoolingPool())
+    req_body = chat_api.ChatCompletionRequest(
+        model="test-model",
+        messages=[chat_api.ChatMessage(role="user", content="你好")],
+        stream=False,
+    )
+
+    result = asyncio.run(chat_api._handle_standard_request(request, req_body, Response()))
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == 429
+    assert result.headers["Retry-After"] == "9"
+
+    payload = _decode_json_response(result)
+    assert payload["error"]["type"] == "rate_limit_error"
+    assert payload["error"]["code"] == "account_pool_cooling"
+
+
+def test_standard_request_sends_transcript_in_original_dialogue_order(monkeypatch):
+    monkeypatch.setattr(chat_api, "is_supported_model", lambda _: True)
+
+    client = FakeClient([{"type": "content", "text": "正式答案"}])
+    request = _make_request(account_pool=FakePool(client))
+    req_body = chat_api.ChatCompletionRequest(
+        model="claude-opus4.6",
+        messages=[
+            chat_api.ChatMessage(role="system", content="规则A"),
+            chat_api.ChatMessage(role="user", content="用户1"),
+            chat_api.ChatMessage(role="assistant", content="助手1"),
+            chat_api.ChatMessage(role="user", content="用户2"),
+        ],
+        stream=False,
+    )
+
+    result = asyncio.run(chat_api._handle_standard_request(request, req_body, Response()))
+
+    assert isinstance(result, JSONResponse)
+    simplified = _simplify_standard_transcript(client.last_transcript)
+    assert simplified == [
+        {"type": "user", "content": "[System Instructions: 规则A]\n\n用户1"},
+        {"type": "assistant", "content": "助手1"},
+        {"type": "user", "content": "用户2"},
+    ]
 
 
 def test_standard_stream_web_keeps_custom_ui_events():

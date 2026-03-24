@@ -40,6 +40,8 @@ RECALL_INTENT_KEYWORDS = [
     "搜索记忆",
 ]
 
+_RETRY_AFTER_SECONDS_PATTERN = re.compile(r"(\d+)\s*秒后重试")
+
 
 def _build_stream_chunk(
     response_id: str,
@@ -84,6 +86,32 @@ def _build_local_ui_chunk(
     }
     payload.update(payload_fields)
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _extract_retry_after_seconds(message: str) -> str | None:
+    match = _RETRY_AFTER_SECONDS_PATTERN.search(str(message or ""))
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _build_account_pool_cooling_response(detail: str) -> JSONResponse:
+    headers: dict[str, str] = {}
+    retry_after = _extract_retry_after_seconds(detail)
+    if retry_after is not None:
+        headers["Retry-After"] = retry_after
+
+    return JSONResponse(
+        status_code=429,
+        headers=headers,
+        content={
+            "error": {
+                "message": detail,
+                "type": "rate_limit_error",
+                "code": "account_pool_cooling",
+            }
+        },
+    )
 
 
 def _is_web_client_type(client_type: str) -> bool:
@@ -1090,16 +1118,7 @@ async def _handle_lite_request(
                 "Lite mode: No available client in account pool",
                 extra={"request_info": {"event": "lite_account_pool_unavailable", "detail": str(exc)}},
             )
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": {
-                        "message": str(exc),
-                        "type": "rate_limit_error",
-                        "code": "account_pool_cooling"
-                    }
-                }
-            )
+            return _build_account_pool_cooling_response(str(exc))
         except HTTPException:
             raise
         except Exception:
@@ -1296,16 +1315,7 @@ async def _handle_standard_request(
                 "Standard mode: No available client in account pool",
                 extra={"request_info": {"event": "standard_account_pool_unavailable", "detail": str(exc)}},
             )
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": {
-                        "message": str(exc),
-                        "type": "rate_limit_error",
-                        "code": "account_pool_cooling"
-                    }
-                }
-            )
+            return _build_account_pool_cooling_response(str(exc))
         except HTTPException:
             raise
         except Exception:
@@ -1919,16 +1929,7 @@ async def create_chat_completion(
                 extra={"request_info": {"event": "account_pool_unavailable", "detail": str(exc)}},
             )
             # 返回标准的 OpenAI 错误格式，让客户端（如 Cherry Studio）能直观显示报错
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": {
-                        "message": str(exc),
-                        "type": "rate_limit_error",
-                        "code": "account_pool_cooling"
-                    }
-                }
-            )
+            return _build_account_pool_cooling_response(str(exc))
         except HTTPException:
             raise
         except Exception:
