@@ -1,41 +1,45 @@
-import logging
 import json
-import time
+import logging
+import os
 from datetime import datetime
 
+
+def _resolve_log_level() -> int:
+    raw_level = str(os.getenv("LOG_LEVEL", "INFO") or "INFO").strip().upper()
+    return getattr(logging, raw_level, logging.INFO)
+
+
 class JsonFormatter(logging.Formatter):
-    """自定义 JSON 格式化器"""
-    def format(self, record):
+    """结构化 JSON 日志格式。"""
+
+    def format(self, record: logging.LogRecord) -> str:
         log_record = {
             "timestamp": datetime.fromtimestamp(record.created).isoformat(),
             "level": record.levelname,
             "message": record.getMessage(),
         }
-        
-        # 提取自定义 extra 字段
+
         if hasattr(record, "request_info"):
             log_record.update(record.request_info)
-            
-        # 如果有异常，记录 trace
+
         if record.exc_info:
             log_record["exception"] = self.formatException(record.exc_info)
-            
+
         return json.dumps(log_record, ensure_ascii=False)
 
-def setup_logger(name="notion_opus"):
-    """配置并返回单例全局 logger"""
+
+def setup_logger(name: str = "notion_opus") -> logging.Logger:
+    """配置并返回全局 logger。"""
     logger = logging.getLogger(name)
-    
-    # 防止重复添加 handler
+    logger.setLevel(_resolve_log_level())
+    logger.propagate = False
+
     if not logger.handlers:
-        logger.setLevel(logging.INFO)
-        
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(JsonFormatter())
-        
         logger.addHandler(console_handler)
-        
+
     return logger
 
-# 全局单例 logger 实例
+
 logger = setup_logger()

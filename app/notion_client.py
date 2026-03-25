@@ -1,4 +1,4 @@
-import threading
+import hashlib
 import time
 import uuid
 from typing import Any, Generator, Optional
@@ -11,8 +11,18 @@ from app.logger import logger
 from app.model_registry import get_notion_model
 from app.stream_parser import parse_stream
 
-# 禁用 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+NOTION_BASE_URL = "https://www.notion.so"
+NOTION_RUN_INFERENCE_URL = f"{NOTION_BASE_URL}/api/v3/runInferenceTranscript"
+NOTION_SAVE_TRANSACTIONS_URL = f"{NOTION_BASE_URL}/api/v3/saveTransactions"
+NOTION_AI_REFERER = f"{NOTION_BASE_URL}/ai"
+NOTION_CHAT_REFERER = f"{NOTION_BASE_URL}/chat"
+NOTION_CLIENT_VERSION = "23.13.20260324.1803"
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+)
 
 
 class NotionUpstreamError(RuntimeError):
@@ -25,28 +35,78 @@ class NotionUpstreamError(RuntimeError):
         status_code: Optional[int] = None,
         retriable: bool = True,
         response_excerpt: str = "",
+        request_id: str = "",
+        should_cooldown: bool = False,
+        error_kind: str = "upstream_http",
     ):
         super().__init__(message)
         self.status_code = status_code
         self.retriable = retriable
         self.response_excerpt = response_excerpt
+        self.request_id = request_id
+        self.should_cooldown = should_cooldown
+        self.error_kind = error_kind
 
 
 class NotionOpusAPI:
     def __init__(self, account_config: dict):
-        """
-        从单组账号配置初始化 Notion 客户端。
-        account_config 需要包含 token_v2, space_id, user_id, space_view_id, user_name, user_email
-        """
         self.token_v2 = account_config.get("token_v2", "")
         self.space_id = account_config.get("space_id", "")
         self.user_id = account_config.get("user_id", "")
         self.space_view_id = account_config.get("space_view_id", "")
         self.user_name = account_config.get("user_name", "user")
         self.user_email = account_config.get("user_email", "")
-        self.url = "https://www.notion.so/api/v3/runInferenceTranscript"
-        self.delete_url = "https://www.notion.so/api/v3/saveTransactions"
+        self.url = NOTION_RUN_INFERENCE_URL
+        self.delete_url = NOTION_SAVE_TRANSACTIONS_URL
         self.account_key = self.user_email or self.user_id or "unknown-account"
+
+    @staticmethod
+    def _extract_request_id(response: requests.Response | None) -> str:
+        if response is None:
+            return ""
+        return str(response.headers.get("x-notion-request-id", "") or "").strip()
+
+    def _token_fingerprint(self) -> str:
+        token = str(self.token_v2 or "").strip()
+        if not token:
+            return ""
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+    def _build_cookies(self) -> dict[str, str]:
+        return {
+            "token_v2": self.token_v2,
+            "notion_user_id": self.user_id,
+        }
+
+    def _build_thread_headers(self) -> dict[str, str]:
+        cookie_header = "; ".join(
+            f"{key}={value}" for key, value in self._build_cookies().items() if value
+        )
+        return {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": DEFAULT_USER_AGENT,
+            "x-notion-active-user-header": self.user_id,
+            "x-notion-space-id": self.space_id,
+            "notion-audit-log-platform": "web",
+            "notion-client-version": NOTION_CLIENT_VERSION,
+            "origin": NOTION_BASE_URL,
+            "referer": NOTION_AI_REFERER,
+            "cookie": cookie_header,
+        }
+
+    def _build_request_headers(self, *, referer: str) -> dict[str, str]:
+        return {
+            "Content-Type": "application/json",
+            "Accept": "application/x-ndjson",
+            "User-Agent": DEFAULT_USER_AGENT,
+            "x-notion-space-id": self.space_id,
+            "x-notion-active-user-header": self.user_id,
+            "notion-audit-log-platform": "web",
+            "notion-client-version": NOTION_CLIENT_VERSION,
+            "origin": NOTION_BASE_URL,
+            "referer": referer,
+        }
 
     def _to_notion_transcript(self, transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
         converted: list[dict[str, Any]] = []
@@ -78,23 +138,107 @@ class NotionOpusAPI:
                     return thread_type
         return "workflow"
 
-    def _resolve_request_profile(self, thread_type: str) -> dict[str, Any]:
-        is_markdown_chat = thread_type == "markdown-chat"
+    def _resolve_request_profile(
+        self,
+        thread_type: str,
+        *,
+        should_create_thread: bool,
+    ) -> dict[str, Any]:
         return {
             "thread_type": thread_type,
-            "create_thread": not is_markdown_chat,
-            "is_partial_transcript": is_markdown_chat,
-            "precreate_thread": is_markdown_chat,
+            "create_thread": should_create_thread,
+            "is_partial_transcript": not should_create_thread,
+            "precreate_thread": False,
             "include_debug_overrides": True,
+            "generate_title": should_create_thread,
+            "set_unread_state": False,
+            "include_thread_parent_pointer": should_create_thread,
+            "referer": NOTION_AI_REFERER if should_create_thread else NOTION_CHAT_REFERER,
         }
 
-    def _build_thread_headers(self) -> dict[str, str]:
-        return {
-            "content-type": "application/json",
-            "cookie": f"token_v2={self.token_v2}",
-            "x-notion-active-user-header": self.user_id,
-            "x-notion-space-id": self.space_id,
+    def _build_payload(
+        self,
+        *,
+        notion_transcript: list[dict[str, Any]],
+        thread_id: str,
+        trace_id: str,
+        thread_type: str,
+        request_profile: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "traceId": trace_id,
+            "spaceId": self.space_id,
+            "threadId": thread_id,
+            "threadType": thread_type,
+            "createThread": request_profile["create_thread"],
+            "generateTitle": request_profile["generate_title"],
+            "saveAllThreadOperations": True,
+            "setUnreadState": request_profile["set_unread_state"],
+            "isPartialTranscript": request_profile["is_partial_transcript"],
+            "asPatchResponse": True,
+            "isUserInAnySalesAssistedSpace": False,
+            "isSpaceSalesAssisted": False,
+            "transcript": notion_transcript,
         }
+        if request_profile["include_thread_parent_pointer"]:
+            payload["threadParentPointer"] = {
+                "table": "space",
+                "id": self.space_id,
+                "spaceId": self.space_id,
+            }
+        if request_profile["include_debug_overrides"]:
+            payload["debugOverrides"] = {
+                "emitAgentSearchExtractedResults": True,
+                "cachedInferences": {},
+                "annotationInferences": {},
+                "emitInferences": False,
+            }
+        return payload
+
+    def _build_log_context(
+        self,
+        *,
+        trace_id: str,
+        thread_id: str,
+        notion_transcript: list[dict[str, Any]],
+        request_profile: dict[str, Any],
+        headers: dict[str, str],
+        cookies: dict[str, str],
+    ) -> dict[str, Any]:
+        return {
+            "trace_id": trace_id,
+            "thread_id": thread_id,
+            "thread_type": request_profile["thread_type"],
+            "create_thread": bool(request_profile["create_thread"]),
+            "is_partial_transcript": bool(request_profile["is_partial_transcript"]),
+            "generate_title": bool(request_profile["generate_title"]),
+            "set_unread_state": bool(request_profile["set_unread_state"]),
+            "include_thread_parent_pointer": bool(
+                request_profile["include_thread_parent_pointer"]
+            ),
+            "precreate_thread": bool(request_profile["precreate_thread"]),
+            "include_debug_overrides": bool(request_profile["include_debug_overrides"]),
+            "account": self.account_key,
+            "space_id": self.space_id,
+            "cookie_keys": sorted(cookies.keys()),
+            "token_fingerprint": self._token_fingerprint(),
+            "notion_client_version": headers.get("notion-client-version", ""),
+            "referer": headers.get("referer", ""),
+            "transcript_length": len(notion_transcript),
+            "transcript_block_types": [str(block.get("type", "")) for block in notion_transcript],
+        }
+
+    def _is_cooldown_worthy_status(self, status_code: int | None) -> bool:
+        return status_code == 429
+
+    def _classify_http_error(self, status_code: int | None) -> str:
+        if status_code == 429:
+            return "upstream_rate_limited"
+        if status_code in {401, 403}:
+            return "upstream_auth_failed"
+        if status_code is not None and status_code >= 500:
+            return "upstream_server_error"
+        return "upstream_http_error"
 
     def _create_thread(self, thread_id: str, thread_type: str) -> bool:
         payload = {
@@ -144,6 +288,7 @@ class NotionOpusAPI:
                         "thread_id": thread_id,
                         "thread_type": thread_type,
                         "status": resp.status_code,
+                        "x_notion_request_id": self._extract_request_id(resp),
                     }
                 },
             )
@@ -162,11 +307,6 @@ class NotionOpusAPI:
         return False
 
     def delete_thread(self, thread_id: str) -> None:
-        """
-        通过 saveTransactions 接口将指定 thread 的 alive 状态设为 False，
-        从而清理 Notion 主页面上的对话记录。
-        此方法设计为在后台线程中调用，不影响主流输出。
-        """
         headers = self._build_thread_headers()
         payload = {
             "requestId": str(uuid.uuid4()),
@@ -199,7 +339,14 @@ class NotionOpusAPI:
             else:
                 logger.warning(
                     f"Thread deletion failed: HTTP {resp.status_code}",
-                    extra={"request_info": {"event": "thread_delete_failed", "thread_id": thread_id, "status": resp.status_code}},
+                    extra={
+                        "request_info": {
+                            "event": "thread_delete_failed",
+                            "thread_id": thread_id,
+                            "status": resp.status_code,
+                            "x_notion_request_id": self._extract_request_id(resp),
+                        }
+                    },
                 )
         except Exception as exc:
             logger.warning(
@@ -207,101 +354,54 @@ class NotionOpusAPI:
                 extra={"request_info": {"event": "thread_delete_error", "thread_id": thread_id}},
             )
 
-    def stream_response(self, transcript: list, thread_id: Optional[str] = None) -> Generator[dict[str, Any], None, None]:
-        """
-        发起 Notion API 请求并返回结构化流生成器。
-        接收完整的 transcript 列表作为参数。
-
-        Args:
-            transcript: 对话历史记录列表
-            thread_id: 可选的已有 thread_id。如果提供，将重用该线程以保持上下文
-        """
+    def stream_response(
+        self,
+        transcript: list,
+        thread_id: Optional[str] = None,
+    ) -> Generator[dict[str, Any], None, None]:
         if not isinstance(transcript, list) or not transcript:
             raise ValueError("Invalid transcript payload: transcript must be a non-empty list.")
 
         notion_transcript = self._to_notion_transcript(transcript)
         thread_type = self._resolve_thread_type(notion_transcript)
-        request_profile = self._resolve_request_profile(thread_type)
 
-        # 如果没有提供 thread_id，创建新的；否则重用已有的
         should_create_thread = thread_id is None
         thread_id = thread_id or str(uuid.uuid4())
         trace_id = str(uuid.uuid4())
-        response = None
+        response: requests.Response | None = None
 
-        # 保存 thread_id 以便外部访问
         self.current_thread_id = thread_id
 
+        request_profile = self._resolve_request_profile(
+            thread_type,
+            should_create_thread=should_create_thread,
+        )
         if request_profile["precreate_thread"] and should_create_thread:
             if not self._create_thread(thread_id, thread_type):
-                should_create_thread = True
                 request_profile["create_thread"] = True
                 request_profile["is_partial_transcript"] = False
-        elif not should_create_thread:
-            # 如果重用已有线程，不要创建新线程
-            request_profile["create_thread"] = False
-            # 关键修复：设置 is_partial_transcript=True，让 Notion 接受客户端的历史消息
-            request_profile["is_partial_transcript"] = True
 
-        cookies = {
-            "token_v2": self.token_v2,
-            "notion_user_id": self.user_id,
-        }
-
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/x-ndjson",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-            "x-notion-space-id": self.space_id,
-            "x-notion-active-user-header": self.user_id,
-            "notion-audit-log-platform": "web",
-            "notion-client-version": "23.13.20260228.0625",
-            "origin": "https://www.notion.so",
-            "referer": "https://www.notion.so/ai",
-        }
-
-        payload = {
-            "traceId": trace_id,
-            "spaceId": self.space_id,
-            "threadId": thread_id,
-            "threadType": thread_type,
-            "createThread": request_profile["create_thread"],
-            "generateTitle": True,
-            "saveAllThreadOperations": True,
-            "setUnreadState": True,
-            "isPartialTranscript": request_profile["is_partial_transcript"],
-            "asPatchResponse": True,
-            "isUserInAnySalesAssistedSpace": False,
-            "isSpaceSalesAssisted": False,
-            "threadParentPointer": {
-                "table": "space",
-                "id": self.space_id,
-                "spaceId": self.space_id,
-            },
-            "transcript": notion_transcript,
-        }
-        if request_profile["include_debug_overrides"]:
-            payload["debugOverrides"] = {
-                "emitAgentSearchExtractedResults": True,
-                "cachedInferences": {},
-                "annotationInferences": {},
-                "emitInferences": False,
-            }
+        cookies = self._build_cookies()
+        headers = self._build_request_headers(referer=request_profile["referer"])
+        payload = self._build_payload(
+            notion_transcript=notion_transcript,
+            thread_id=thread_id,
+            trace_id=trace_id,
+            thread_type=thread_type,
+            request_profile=request_profile,
+        )
+        log_context = self._build_log_context(
+            trace_id=trace_id,
+            thread_id=thread_id,
+            notion_transcript=notion_transcript,
+            request_profile=request_profile,
+            headers=headers,
+            cookies=cookies,
+        )
 
         logger.info(
             "Dispatching request to Notion upstream",
-            extra={
-                "request_info": {
-                    "event": "notion_upstream_request",
-                    "trace_id": trace_id,
-                    "thread_id": thread_id,
-                    "thread_type": thread_type,
-                    "create_thread": bool(request_profile["create_thread"]),
-                    "is_partial_transcript": bool(request_profile["is_partial_transcript"]),
-                    "account": self.account_key,
-                    "space_id": self.space_id,
-                }
-            },
+            extra={"request_info": {"event": "notion_upstream_request", **log_context}},
         )
 
         try:
@@ -314,15 +414,44 @@ class NotionOpusAPI:
                 stream=True,
                 timeout=(15, 120),
             )
+            upstream_request_id = self._extract_request_id(response)
+            response_log_context = {
+                **log_context,
+                "status_code": response.status_code,
+                "x_notion_request_id": upstream_request_id,
+            }
+
             if response.status_code != 200:
                 excerpt = (response.text or "").strip().replace("\n", " ")[:300]
-                retriable = response.status_code >= 500  # 429 不再重试，避免账号被冷却
+                logger.warning(
+                    "Notion upstream returned non-200 response",
+                    extra={
+                        "request_info": {
+                            "event": "notion_upstream_response",
+                            **response_log_context,
+                            "response_excerpt": excerpt,
+                        }
+                    },
+                )
                 raise NotionUpstreamError(
                     f"Notion upstream returned HTTP {response.status_code}.",
                     status_code=response.status_code,
-                    retriable=retriable,
+                    retriable=response.status_code >= 500,
                     response_excerpt=excerpt,
+                    request_id=upstream_request_id,
+                    should_cooldown=self._is_cooldown_worthy_status(response.status_code),
+                    error_kind=self._classify_http_error(response.status_code),
                 )
+
+            logger.info(
+                "Notion upstream accepted request",
+                extra={
+                    "request_info": {
+                        "event": "notion_upstream_response",
+                        **response_log_context,
+                    }
+                },
+            )
 
             emitted = False
             for chunk in parse_stream(response):
@@ -334,12 +463,11 @@ class NotionOpusAPI:
                     "Notion upstream returned an empty stream.",
                     status_code=502,
                     retriable=True,
+                    request_id=upstream_request_id,
+                    should_cooldown=False,
+                    error_kind="upstream_empty_stream",
                 )
 
-            # 流结束后，不再自动删除 thread
-            # 原因：Notion API 的 workflow 模式依赖于服务器端保存的对话历史
-            # 删除 thread 会导致后续请求无法获取历史消息（AI 失忆）
-            # 保持 thread 存活可以维持对话上下文
             logger.info(
                 "Thread completed and preserved for conversation context",
                 extra={
@@ -347,16 +475,45 @@ class NotionOpusAPI:
                         "event": "thread_completed_preserved",
                         "thread_id": thread_id,
                         "was_created_new": should_create_thread,
+                        "thread_type": thread_type,
+                        "x_notion_request_id": upstream_request_id,
                     }
                 },
             )
         except requests.exceptions.Timeout as exc:
-            logger.error(f"Request timeout: {exc}", exc_info=True)
-            raise NotionUpstreamError("Request to Notion upstream timed out.", retriable=True) from exc
+            logger.error(
+                "Request timeout",
+                exc_info=True,
+                extra={
+                    "request_info": {
+                        "event": "notion_upstream_timeout",
+                        **log_context,
+                    }
+                },
+            )
+            raise NotionUpstreamError(
+                "Request to Notion upstream timed out.",
+                retriable=True,
+                should_cooldown=False,
+                error_kind="upstream_timeout",
+            ) from exc
         except requests.exceptions.RequestException as exc:
-            logger.error(f"Request failed: {exc}", exc_info=True)
-            # 不暴露原始异常细节给用户
-            raise NotionUpstreamError("Request to Notion upstream failed. Please try again later.", retriable=True) from exc
+            logger.error(
+                "Request failed",
+                exc_info=True,
+                extra={
+                    "request_info": {
+                        "event": "notion_upstream_request_exception",
+                        **log_context,
+                    }
+                },
+            )
+            raise NotionUpstreamError(
+                "Request to Notion upstream failed. Please try again later.",
+                retriable=True,
+                should_cooldown=False,
+                error_kind="upstream_request_exception",
+            ) from exc
         finally:
             if response is not None:
                 response.close()

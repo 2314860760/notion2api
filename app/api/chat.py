@@ -114,6 +114,28 @@ def _build_account_pool_cooling_response(detail: str) -> JSONResponse:
     )
 
 
+def _maybe_mark_client_failed(pool: Any, client: Any, exc: NotionUpstreamError) -> bool:
+    if client is None or not isinstance(exc, NotionUpstreamError) or not exc.should_cooldown:
+        return False
+
+    try:
+        pool.mark_failed(
+            client,
+            reason=exc.error_kind,
+            upstream_status_code=exc.status_code,
+            upstream_request_id=exc.request_id,
+        )
+    except TypeError:
+        pool.mark_failed(client)
+    return True
+
+
+def _upstream_error_http_status(exc: NotionUpstreamError) -> int:
+    if exc.status_code is not None and 400 <= exc.status_code < 500:
+        return exc.status_code
+    return 503
+
+
 def _is_web_client_type(client_type: str) -> bool:
     return str(client_type or "").strip().lower() == "web"
 
@@ -1096,8 +1118,7 @@ async def _handle_lite_request(
             )
 
         except NotionUpstreamError as exc:
-            if client is not None and exc.retriable:
-                pool.mark_failed(client)
+            cooldown_applied = _maybe_mark_client_failed(pool, client, exc)
             logger.warning(
                 "Lite mode: Notion upstream failed",
                 extra={
@@ -1107,12 +1128,16 @@ async def _handle_lite_request(
                         "max_retries": max_retries,
                         "status_code": exc.status_code,
                         "retriable": exc.retriable,
+                        "should_cooldown": exc.should_cooldown,
+                        "cooldown_applied": cooldown_applied,
+                        "error_kind": exc.error_kind,
+                        "x_notion_request_id": exc.request_id,
                         "response_excerpt": exc.response_excerpt,
                     }
                 },
             )
             if attempt == max_retries or not exc.retriable:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
+                raise HTTPException(status_code=_upstream_error_http_status(exc), detail=str(exc)) from exc
         except RuntimeError as exc:
             logger.error(
                 "Lite mode: No available client in account pool",
@@ -1122,8 +1147,6 @@ async def _handle_lite_request(
         except HTTPException:
             raise
         except Exception:
-            if client is not None:
-                pool.mark_failed(client)
             logger.error(
                 "Lite mode: Unhandled error",
                 exc_info=True,
@@ -1293,8 +1316,7 @@ async def _handle_standard_request(
             return JSONResponse(content=_dump_model_exclude_none(response_obj))
 
         except NotionUpstreamError as exc:
-            if client is not None and exc.retriable:
-                pool.mark_failed(client)
+            cooldown_applied = _maybe_mark_client_failed(pool, client, exc)
             logger.warning(
                 "Standard mode: Notion upstream failed",
                 extra={
@@ -1304,12 +1326,16 @@ async def _handle_standard_request(
                         "max_retries": max_retries,
                         "status_code": exc.status_code,
                         "retriable": exc.retriable,
+                        "should_cooldown": exc.should_cooldown,
+                        "cooldown_applied": cooldown_applied,
+                        "error_kind": exc.error_kind,
+                        "x_notion_request_id": exc.request_id,
                         "response_excerpt": exc.response_excerpt,
                     }
                 },
             )
             if attempt == max_retries or not exc.retriable:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
+                raise HTTPException(status_code=_upstream_error_http_status(exc), detail=str(exc)) from exc
         except RuntimeError as exc:
             logger.error(
                 "Standard mode: No available client in account pool",
@@ -1319,8 +1345,6 @@ async def _handle_standard_request(
         except HTTPException:
             raise
         except Exception:
-            if client is not None:
-                pool.mark_failed(client)
             logger.error(
                 "Standard mode: Unhandled error",
                 exc_info=True,
@@ -1646,8 +1670,9 @@ async def create_chat_completion(
                             },
                         )
                         return
-                    if isinstance(exc, NotionUpstreamError) and client is not None and exc.retriable:
-                        pool.mark_failed(client)
+                    cooldown_applied = False
+                    if isinstance(exc, NotionUpstreamError):
+                        cooldown_applied = _maybe_mark_client_failed(pool, client, exc)
                     log_method = logger.warning if isinstance(exc, NotionUpstreamError) else logger.error
                     log_method(
                         "Streaming response interrupted",
@@ -1658,6 +1683,10 @@ async def create_chat_completion(
                                 "conversation_id": conversation_id,
                                 "attempt": attempt,
                                 "is_upstream_error": isinstance(exc, NotionUpstreamError),
+                                "should_cooldown": getattr(exc, "should_cooldown", False),
+                                "cooldown_applied": cooldown_applied,
+                                "error_kind": getattr(exc, "error_kind", ""),
+                                "x_notion_request_id": getattr(exc, "request_id", ""),
                             }
                         },
                     )
@@ -1905,8 +1934,7 @@ async def create_chat_completion(
                 headers=response_headers,
             )
         except NotionUpstreamError as exc:
-            if client is not None and exc.retriable:
-                pool.mark_failed(client)
+            cooldown_applied = _maybe_mark_client_failed(pool, client, exc)
             logger.warning(
                 "Notion upstream failed",
                 extra={
@@ -1917,12 +1945,16 @@ async def create_chat_completion(
                         "conversation_id": conversation_id,
                         "status_code": exc.status_code,
                         "retriable": exc.retriable,
+                        "should_cooldown": exc.should_cooldown,
+                        "cooldown_applied": cooldown_applied,
+                        "error_kind": exc.error_kind,
+                        "x_notion_request_id": exc.request_id,
                         "response_excerpt": exc.response_excerpt,
                     }
                 },
             )
             if attempt == max_retries or not exc.retriable:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
+                raise HTTPException(status_code=_upstream_error_http_status(exc), detail=str(exc)) from exc
         except RuntimeError as exc:
             logger.error(
                 "No available client in account pool",
@@ -1933,8 +1965,6 @@ async def create_chat_completion(
         except HTTPException:
             raise
         except Exception:
-            if client is not None:
-                pool.mark_failed(client)
             logger.error(
                 "Unhandled chat completion error",
                 exc_info=True,
